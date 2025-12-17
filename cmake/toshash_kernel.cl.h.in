@@ -1,0 +1,13 @@
+/**
+ * Auto-generated OpenCL kernel source
+ * Do not edit manually
+ */
+
+#pragma once
+
+static const unsigned char toshash_cl_source[] = {
+    @TOSHASH_CL_KERNEL@
+    0x00  // null terminator
+};
+
+static const size_t toshash_cl_source_len = sizeof(toshash_cl_source) - 1;

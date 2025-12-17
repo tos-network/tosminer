@@ -1,0 +1,109 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+bin/
+lib/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.cmake
+!cmake/*.cmake
+_deps/
+
+# Compiled files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Generated kernel headers
+toshash_kernel.cl.h
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.orig
+*.bak
+.project
+.cproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# Visual Studio
+*.sln
+*.vcxproj*
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.aps
+ipch/
+Debug/
+Release/
+x64/
+x86/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*.directory
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.cache
+
+# Test output
+Testing/
+CTestTestfile.cmake
+
+# Package managers
+vcpkg_installed/
+
+# Documentation build
+docs/_build/
+html/
+latex/
+
+# Profiling and debugging
+*.dSYM/
+*.gcda
+*.gcno
+*.gcov
+perf.data
+perf.data.old
+
+# Core dumps (but not src/core directory)
+/core
+core.*
+vgcore.*
