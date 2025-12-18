@@ -8,6 +8,8 @@
 
 #include "Types.h"
 #include "WorkPackage.h"
+#include "util/Guards.h"
+#include "util/MovingAverage.h"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -68,12 +70,17 @@ struct DeviceDescriptor {
  * Hash rate structure
  */
 struct HashRate {
-    double rate;        // Hashes per second
+    double rate;        // Instantaneous hashes per second
+    double emaRate;     // EMA-smoothed hashes per second
     uint64_t count;     // Total hashes computed
     double duration;    // Time in seconds
 
-    HashRate() : rate(0), count(0), duration(0) {}
-    HashRate(double r, uint64_t c, double d) : rate(r), count(c), duration(d) {}
+    HashRate() : rate(0), emaRate(0), count(0), duration(0) {}
+    HashRate(double r, uint64_t c, double d) : rate(r), emaRate(r), count(c), duration(d) {}
+    HashRate(double r, double ema, uint64_t c, double d) : rate(r), emaRate(ema), count(c), duration(d) {}
+
+    // Get the effective rate (prefer EMA if available)
+    double effectiveRate() const { return emaRate > 0 ? emaRate : rate; }
 };
 
 /**
@@ -321,9 +328,11 @@ protected:
     // New work available flag
     std::atomic<bool> m_newWork{false};
 
-    // Hash counting
+    // Hash counting (using SpinLock for high-frequency updates)
     std::atomic<uint64_t> m_hashCount{0};
     std::chrono::steady_clock::time_point m_startTime;
+    mutable SpinLock m_hashRateLock;
+    HashRateCalculator m_hashRateCalc{30.0};  // 30-second EMA period
 
     // Solution callback
     SolutionCallback m_solutionCallback;

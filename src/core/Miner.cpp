@@ -86,13 +86,26 @@ HashRate Miner::getHashRate() const {
     double duration = std::chrono::duration<double>(now - m_startTime).count();
     uint64_t count = m_hashCount.load();
 
-    double rate = (duration > 0) ? (static_cast<double>(count) / duration) : 0;
-    return HashRate(rate, count, duration);
+    // Calculate instantaneous rate
+    double instantRate = (duration > 0) ? (static_cast<double>(count) / duration) : 0;
+
+    // Get EMA rate (thread-safe)
+    double emaRate;
+    {
+        SpinGuard lock(m_hashRateLock);
+        emaRate = m_hashRateCalc.getEmaRate();
+    }
+
+    return HashRate(instantRate, emaRate, count, duration);
 }
 
 void Miner::resetHashCount() {
     m_hashCount = 0;
     m_startTime = std::chrono::steady_clock::now();
+
+    // Reset EMA calculator
+    SpinGuard lock(m_hashRateLock);
+    m_hashRateCalc.reset();
 }
 
 std::string Miner::getName() const {
@@ -125,6 +138,10 @@ void Miner::resume() {
 
 void Miner::updateHashCount(uint64_t count) {
     m_hashCount += count;
+
+    // Update EMA calculator (thread-safe with SpinLock)
+    SpinGuard lock(m_hashRateLock);
+    m_hashRateCalc.update(m_hashCount.load());
 }
 
 void Miner::submitSolution(const Solution& solution) {

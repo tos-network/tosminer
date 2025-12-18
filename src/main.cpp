@@ -11,6 +11,7 @@
 #include "stratum/StratumClient.h"
 #include "api/ApiServer.h"
 #include "util/Log.h"
+#include "util/GpuMonitor.h"
 
 #ifdef WITH_OPENCL
 #include "opencl/CLMiner.h"
@@ -119,6 +120,11 @@ void runBenchmark(const MinerConfig& config) {
 
 void runMining(const MinerConfig& config) {
     Log::info("Starting TOS Miner...");
+
+    // Initialize GPU monitoring
+    if (GpuMonitor::instance().init()) {
+        Log::info("GPU monitoring enabled");
+    }
 
     Farm farm;
     StratumClient stratum;
@@ -241,17 +247,35 @@ void runMining(const MinerConfig& config) {
             std::ostringstream ss;
             ss << std::fixed << std::setprecision(2);
 
-            if (hr.rate >= 1000000) {
-                ss << (hr.rate / 1000000) << " MH/s";
-            } else if (hr.rate >= 1000) {
-                ss << (hr.rate / 1000) << " KH/s";
+            // Use EMA rate for stable display
+            double displayRate = hr.effectiveRate();
+            if (displayRate >= 1000000) {
+                ss << (displayRate / 1000000) << " MH/s";
+            } else if (displayRate >= 1000) {
+                ss << (displayRate / 1000) << " KH/s";
             } else {
-                ss << hr.rate << " H/s";
+                ss << displayRate << " H/s";
             }
 
             ss << " | A:" << stats.acceptedShares
                << " R:" << stats.rejectedShares
                << " S:" << stats.staleShares;
+
+            // Add GPU temperatures if monitoring is available
+            if (GpuMonitor::instance().isAvailable()) {
+                auto gpuStats = GpuMonitor::instance().getAllStats();
+                if (!gpuStats.empty()) {
+                    ss << " | T:";
+                    bool first = true;
+                    for (const auto& gpu : gpuStats) {
+                        if (gpu.valid && gpu.temperature >= 0) {
+                            if (!first) ss << "/";
+                            ss << gpu.temperature << "C";
+                            first = false;
+                        }
+                    }
+                }
+            }
 
             Log::info(ss.str());
         }
@@ -270,6 +294,9 @@ void runMining(const MinerConfig& config) {
 
     // Wait for pending share submissions with 5 second timeout
     stratum.gracefulDisconnect(5000);
+
+    // Shutdown GPU monitoring
+    GpuMonitor::instance().shutdown();
 
     Log::info("Shutdown complete");
 }

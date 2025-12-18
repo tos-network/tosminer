@@ -99,6 +99,7 @@ set(TOSHASH_SOURCES
 
 set(UTIL_SOURCES
     src/util/Log.cpp
+    src/util/GpuMonitor.cpp
 )
 
 set(STRATUM_SOURCES

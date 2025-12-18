@@ -5,6 +5,7 @@
 #include "ApiServer.h"
 #include "Version.h"
 #include "util/Log.h"
+#include "util/GpuMonitor.h"
 #include <sstream>
 #include <iomanip>
 
@@ -163,15 +164,18 @@ json ApiServer::getStatus() {
     status["connected"] = m_stratum.isConnected();
     status["authorized"] = m_stratum.isAuthorized();
 
-    // Hash rate with appropriate unit
-    if (hr.rate >= 1000000) {
-        status["hashrate"] = std::to_string(hr.rate / 1000000) + " MH/s";
-    } else if (hr.rate >= 1000) {
-        status["hashrate"] = std::to_string(hr.rate / 1000) + " KH/s";
+    // Hash rate with appropriate unit (use EMA for stable display)
+    double displayRate = hr.effectiveRate();
+    if (displayRate >= 1000000) {
+        status["hashrate"] = std::to_string(displayRate / 1000000) + " MH/s";
+    } else if (displayRate >= 1000) {
+        status["hashrate"] = std::to_string(displayRate / 1000) + " KH/s";
     } else {
-        status["hashrate"] = std::to_string(hr.rate) + " H/s";
+        status["hashrate"] = std::to_string(displayRate) + " H/s";
     }
-    status["hashrate_raw"] = hr.rate;
+    status["hashrate_raw"] = displayRate;
+    status["hashrate_instant"] = hr.rate;
+    status["hashrate_ema"] = hr.emaRate;
 
     status["shares"] = {
         {"accepted", stats.acceptedShares},
@@ -191,7 +195,9 @@ json ApiServer::getStats() {
     auto stats = m_farm.getStats();
 
     json result;
-    result["hashrate"] = hr.rate;
+    result["hashrate"] = hr.effectiveRate();  // EMA rate for stability
+    result["hashrate_instant"] = hr.rate;
+    result["hashrate_ema"] = hr.emaRate;
     result["hashes"] = hr.count;
     result["duration"] = hr.duration;
     result["accepted"] = stats.acceptedShares;
@@ -227,11 +233,39 @@ json ApiServer::getDevices() {
         device["name"] = dev.name;
         device["type"] = dev.type == MinerType::CPU ? "CPU" :
                          dev.type == MinerType::OpenCL ? "OpenCL" : "CUDA";
-        device["hashrate"] = hr.rate;
+        device["hashrate"] = hr.effectiveRate();  // EMA rate
+        device["hashrate_instant"] = hr.rate;
+        device["hashrate_ema"] = hr.emaRate;
         device["hashes"] = hr.count;
         device["memory_mb"] = dev.totalMemory / (1024 * 1024);
         device["compute_units"] = dev.computeUnits;
         device["failed"] = m_farm.isMinerFailed(static_cast<unsigned>(i));
+
+        // Add GPU monitoring data if available
+        GpuStats gpuStats;
+        if (dev.type == MinerType::CUDA) {
+            gpuStats = GpuMonitor::instance().getNvidiaStats(dev.cudaDeviceIndex);
+        } else if (dev.type == MinerType::OpenCL) {
+            gpuStats = GpuMonitor::instance().getAmdStats(dev.clDeviceIndex);
+        }
+
+        if (gpuStats.valid) {
+            if (gpuStats.temperature >= 0) {
+                device["temperature"] = gpuStats.temperature;
+            }
+            if (gpuStats.fanSpeed >= 0) {
+                device["fan_speed"] = gpuStats.fanSpeed;
+            }
+            if (gpuStats.powerUsage >= 0) {
+                device["power_usage"] = gpuStats.powerUsage;
+            }
+            if (gpuStats.clockCore >= 0) {
+                device["clock_core"] = gpuStats.clockCore;
+            }
+            if (gpuStats.gpuUtilization >= 0) {
+                device["gpu_utilization"] = gpuStats.gpuUtilization;
+            }
+        }
 
         devices.push_back(device);
     }
@@ -248,6 +282,11 @@ json ApiServer::getHealth() {
 
     bool anyUnhealthy = false;
     bool anyDegraded = false;
+    bool anyOverheating = false;
+
+    // Temperature thresholds
+    constexpr int TEMP_WARNING = 80;   // Start warning
+    constexpr int TEMP_CRITICAL = 90;  // Critical temperature
 
     for (size_t i = 0; i < descriptors.size(); i++) {
         const auto& dev = descriptors[i];
@@ -256,13 +295,39 @@ json ApiServer::getHealth() {
         device["index"] = dev.index;
         device["name"] = dev.name;
 
+        std::string status = "healthy";
+
         if (m_farm.isMinerFailed(static_cast<unsigned>(i))) {
-            device["status"] = "failed";
+            status = "failed";
             anyUnhealthy = true;
-        } else {
-            device["status"] = "healthy";
         }
 
+        // Check GPU temperature
+        GpuStats gpuStats;
+        if (dev.type == MinerType::CUDA) {
+            gpuStats = GpuMonitor::instance().getNvidiaStats(dev.cudaDeviceIndex);
+        } else if (dev.type == MinerType::OpenCL) {
+            gpuStats = GpuMonitor::instance().getAmdStats(dev.clDeviceIndex);
+        }
+
+        if (gpuStats.valid && gpuStats.temperature >= 0) {
+            device["temperature"] = gpuStats.temperature;
+
+            if (gpuStats.temperature >= TEMP_CRITICAL) {
+                if (status == "healthy") status = "critical";
+                anyUnhealthy = true;
+                anyOverheating = true;
+                device["temperature_status"] = "critical";
+            } else if (gpuStats.temperature >= TEMP_WARNING) {
+                if (status == "healthy") status = "warning";
+                anyDegraded = true;
+                device["temperature_status"] = "warning";
+            } else {
+                device["temperature_status"] = "normal";
+            }
+        }
+
+        device["status"] = status;
         devices.push_back(device);
     }
 
@@ -270,6 +335,11 @@ json ApiServer::getHealth() {
         health["overall"] = "unhealthy";
     } else if (anyDegraded) {
         health["overall"] = "degraded";
+    }
+
+    if (anyOverheating) {
+        health["overheating"] = true;
+        health["warning"] = "One or more GPUs are overheating!";
     }
 
     health["devices"] = devices;
