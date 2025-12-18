@@ -4,6 +4,7 @@
 
 #include "MinerCLI.h"
 #include "Version.h"
+#include "core/TuningProfiles.h"
 #include <boost/program_options.hpp>
 #include <iostream>
 #include <sstream>
@@ -28,6 +29,19 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
         ("pool,P", po::value<std::string>(), "Pool URL (stratum+tcp://host:port)")
         ("user,u", po::value<std::string>(), "Pool username (wallet.worker)")
         ("password,p", po::value<std::string>()->default_value("x"), "Pool password")
+        ("stratum-protocol", po::value<std::string>()->default_value("stratum"),
+         "Stratum protocol: stratum, ethproxy, ethereumstratum")
+    ;
+
+    po::options_description tls("TLS options");
+    tls.add_options()
+        ("tls-strict", "Enable strict TLS certificate verification")
+    ;
+
+    po::options_description api("API options");
+    api.add_options()
+        ("api-port", po::value<unsigned>()->default_value(0),
+         "JSON-RPC API port (0 = disabled)")
     ;
 
     po::options_description device("Device options");
@@ -42,14 +56,17 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
 
     po::options_description performance("Performance options");
     performance.add_options()
-        ("opencl-global-work", po::value<unsigned>()->default_value(16384),
-         "OpenCL global work size")
-        ("opencl-local-work", po::value<unsigned>()->default_value(1),
-         "OpenCL local work size")
-        ("cuda-grid", po::value<unsigned>()->default_value(16384),
-         "CUDA grid size")
-        ("cuda-block", po::value<unsigned>()->default_value(1),
-         "CUDA block size")
+        ("profile", po::value<std::string>()->default_value("default"),
+         "Tuning profile (default, nvidia-ampere, amd-rdna3, etc.)")
+        ("list-profiles", "List available tuning profiles")
+        ("opencl-global-work", po::value<unsigned>(),
+         "OpenCL global work size (overrides profile)")
+        ("opencl-local-work", po::value<unsigned>(),
+         "OpenCL local work size (overrides profile)")
+        ("cuda-grid", po::value<unsigned>(),
+         "CUDA grid size (overrides profile)")
+        ("cuda-block", po::value<unsigned>(),
+         "CUDA block size (overrides profile)")
     ;
 
     po::options_description benchmark("Benchmark options");
@@ -60,7 +77,7 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
     ;
 
     po::options_description all("TOS Miner Options");
-    all.add(general).add(mining).add(device).add(performance).add(benchmark);
+    all.add(general).add(mining).add(tls).add(api).add(device).add(performance).add(benchmark);
 
     try {
         po::variables_map vm;
@@ -78,6 +95,15 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
         }
         config.verbose = vm.count("verbose") > 0;
         config.quiet = vm.count("quiet") > 0;
+
+        // List profiles
+        if (vm.count("list-profiles")) {
+            std::cout << "\nAvailable tuning profiles:\n";
+            TuningProfiles::printProfiles();
+            std::cout << std::endl;
+            config.showHelp = true;  // Exit after showing
+            return config;
+        }
 
         // Mode selection
         if (vm.count("list-devices")) {
@@ -118,11 +144,38 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
             config.cudaDevices = parseDeviceList(vm["cuda-devices"].as<std::string>());
         }
 
-        // Performance options
-        config.openclGlobalWorkSize = vm["opencl-global-work"].as<unsigned>();
-        config.openclLocalWorkSize = vm["opencl-local-work"].as<unsigned>();
-        config.cudaGridSize = vm["cuda-grid"].as<unsigned>();
-        config.cudaBlockSize = vm["cuda-block"].as<unsigned>();
+        // Performance options - apply profile first, then allow overrides
+        config.tuningProfile = vm["profile"].as<std::string>();
+        const auto& profile = TuningProfiles::getProfile(config.tuningProfile);
+
+        // Set defaults from profile
+        config.openclGlobalWorkSize = profile.openclGlobalWorkSize;
+        config.openclLocalWorkSize = profile.openclLocalWorkSize;
+        config.cudaGridSize = profile.cudaGridSize;
+        config.cudaBlockSize = profile.cudaBlockSize;
+
+        // Allow manual overrides
+        if (vm.count("opencl-global-work")) {
+            config.openclGlobalWorkSize = vm["opencl-global-work"].as<unsigned>();
+        }
+        if (vm.count("opencl-local-work")) {
+            config.openclLocalWorkSize = vm["opencl-local-work"].as<unsigned>();
+        }
+        if (vm.count("cuda-grid")) {
+            config.cudaGridSize = vm["cuda-grid"].as<unsigned>();
+        }
+        if (vm.count("cuda-block")) {
+            config.cudaBlockSize = vm["cuda-block"].as<unsigned>();
+        }
+
+        // TLS options
+        config.tlsStrict = vm.count("tls-strict") > 0;
+
+        // API options
+        config.apiPort = vm["api-port"].as<unsigned>();
+
+        // Stratum protocol
+        config.stratumProtocol = vm["stratum-protocol"].as<std::string>();
 
     } catch (const po::error& e) {
         std::cerr << "Error: " << e.what() << std::endl;
@@ -145,9 +198,17 @@ General Options:
   -q, --quiet               Quiet output (errors only)
 
 Mining Options:
-  -P, --pool URL            Pool URL (stratum+tcp://host:port)
+  -P, --pool URL            Pool URL (stratum+tcp://host:port or stratum+ssl://host:port)
   -u, --user USER           Pool username (wallet.worker)
   -p, --password PASS       Pool password (default: x)
+  --stratum-protocol PROTO  Protocol variant: stratum, ethproxy, ethereumstratum
+
+TLS Options:
+  --tls-strict              Enable strict TLS certificate verification
+                            (default: accept any certificate)
+
+API Options:
+  --api-port PORT           JSON-RPC API port for monitoring (0 = disabled)
 
 Device Options:
   -L, --list-devices        List available mining devices
@@ -158,10 +219,12 @@ Device Options:
   --cuda-devices LIST       Comma-separated CUDA device indices
 
 Performance Options:
-  --opencl-global-work N    OpenCL global work size (default: 16384)
-  --opencl-local-work N     OpenCL local work size (default: 1)
-  --cuda-grid N             CUDA grid size (default: 16384)
-  --cuda-block N            CUDA block size (default: 1)
+  --profile NAME            Tuning profile (default, nvidia-ampere, amd-rdna3, etc.)
+  --list-profiles           List all available tuning profiles
+  --opencl-global-work N    OpenCL global work size (overrides profile)
+  --opencl-local-work N     OpenCL local work size (overrides profile)
+  --cuda-grid N             CUDA grid size (overrides profile)
+  --cuda-block N            CUDA block size (overrides profile)
 
 Benchmark Options:
   -M, --benchmark           Run benchmark mode
@@ -172,6 +235,10 @@ Examples:
   tosminer -L                              List devices
   tosminer -G -P stratum+tcp://pool:3333 -u wallet.worker
                                            Mine with OpenCL
+  tosminer -P stratum+ssl://pool:3334 -u wallet --tls-strict
+                                           Mine with TLS (strict verification)
+  tosminer -P stratum+tcp://pool:3333 -u wallet --api-port 3000
+                                           Mine with monitoring API on port 3000
 
 )" << std::endl;
 }

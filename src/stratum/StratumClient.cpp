@@ -619,12 +619,18 @@ void StratumClient::handleResponse(const json& response) {
             authorize();
         }
     }
-    else if (method == "mining.authorize") {
+    else if (method == "mining.authorize" || method == "eth_submitLogin") {
         if (hasError) {
             Log::error("Authorization failed: " + errorMsg);
             handleReconnect();
         } else {
-            bool authorized = response["result"].get<bool>();
+            // eth_submitLogin returns true on success, mining.authorize returns bool result
+            bool authorized = true;
+            if (response.contains("result")) {
+                if (response["result"].is_boolean()) {
+                    authorized = response["result"].get<bool>();
+                }
+            }
             if (authorized) {
                 Log::info("Authorized with pool as " + m_user);
                 m_state = StratumState::Authorized;
@@ -732,7 +738,30 @@ uint64_t StratumClient::sendRequest(const std::string& method, const json& param
 
 void StratumClient::subscribe() {
     json params = json::array();
-    params.push_back(MINER_VERSION);
+
+    switch (m_protocol) {
+        case StratumProtocol::EthProxy:
+            // ETHPROXY doesn't use subscribe, go straight to login
+            m_state = StratumState::Subscribed;
+            authorize();
+            return;
+
+        case StratumProtocol::EthereumStratum:
+            // ETHEREUMSTRATUM uses extended subscribe
+            params.push_back(MINER_VERSION);
+            params.push_back("EthereumStratum/1.0.0");
+            break;
+
+        case StratumProtocol::StratumV2:
+            // Stratum V2 will be handled separately
+            Log::warning("Stratum V2 not yet fully implemented, falling back to V1");
+            [[fallthrough]];
+
+        case StratumProtocol::Stratum:
+        default:
+            params.push_back(MINER_VERSION);
+            break;
+    }
 
     uint64_t id = sendRequest("mining.subscribe", params);
     {
@@ -744,13 +773,34 @@ void StratumClient::subscribe() {
 void StratumClient::authorize() {
     const auto& pool = m_pools[m_currentPoolIndex];
     json params = json::array();
-    params.push_back(pool.user.empty() ? m_user : pool.user);
-    params.push_back(pool.pass.empty() ? m_pass : pool.pass);
+    std::string user = pool.user.empty() ? m_user : pool.user;
+    std::string pass = pool.pass.empty() ? m_pass : pool.pass;
 
-    uint64_t id = sendRequest("mining.authorize", params);
+    std::string method;
+    switch (m_protocol) {
+        case StratumProtocol::EthProxy:
+            // ETHPROXY uses eth_submitLogin
+            method = "eth_submitLogin";
+            params.push_back(user);
+            if (!pass.empty() && pass != "x") {
+                params.push_back(pass);
+            }
+            break;
+
+        case StratumProtocol::EthereumStratum:
+        case StratumProtocol::StratumV2:
+        case StratumProtocol::Stratum:
+        default:
+            method = "mining.authorize";
+            params.push_back(user);
+            params.push_back(pass);
+            break;
+    }
+
+    uint64_t id = sendRequest(method, params);
     {
         Guard lock(m_requestMutex);
-        m_pendingRequests[id] = {"mining.authorize", std::chrono::steady_clock::now()};
+        m_pendingRequests[id] = {method, std::chrono::steady_clock::now()};
     }
 }
 

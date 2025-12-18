@@ -30,6 +30,26 @@ namespace tos {
 using json = nlohmann::json;
 
 /**
+ * Stratum protocol variants
+ */
+enum class StratumProtocol {
+    Stratum,          // Standard stratum (TOS native)
+    EthProxy,         // ETHPROXY - simplified proxy protocol
+    EthereumStratum,  // ETHEREUMSTRATUM - Nicehash variant
+    StratumV2         // Stratum V2 (future)
+};
+
+/**
+ * Convert string to protocol enum
+ */
+inline StratumProtocol parseStratumProtocol(const std::string& str) {
+    if (str == "ethproxy" || str == "ETHPROXY") return StratumProtocol::EthProxy;
+    if (str == "ethereumstratum" || str == "ETHEREUMSTRATUM") return StratumProtocol::EthereumStratum;
+    if (str == "stratumv2" || str == "stratum2") return StratumProtocol::StratumV2;
+    return StratumProtocol::Stratum;  // default
+}
+
+/**
  * Connection state
  */
 enum class StratumState {
@@ -131,6 +151,16 @@ public:
      *               If false, accept any certificate (insecure, but common for pools)
      */
     void setTlsVerification(bool strict) { m_tlsStrictVerify = strict; }
+
+    /**
+     * Set stratum protocol variant
+     */
+    void setProtocol(StratumProtocol protocol) { m_protocol = protocol; }
+
+    /**
+     * Get current protocol
+     */
+    StratumProtocol getProtocol() const { return m_protocol; }
 
     /**
      * Check if strict TLS verification is enabled
@@ -441,6 +471,9 @@ private:
 
     // TLS settings
     bool m_tlsStrictVerify{false};  // Default: accept any cert (pools often use self-signed)
+
+    // Protocol variant
+    StratumProtocol m_protocol{StratumProtocol::Stratum};
 
     // Keepalive settings
     static constexpr unsigned KEEPALIVE_INTERVAL = 30;  // seconds

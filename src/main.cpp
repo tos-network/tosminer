@@ -9,6 +9,7 @@
 #include "core/Miner.h"
 #include "toshash/TosHash.h"
 #include "stratum/StratumClient.h"
+#include "api/ApiServer.h"
 #include "util/Log.h"
 
 #ifdef WITH_OPENCL
@@ -137,6 +138,12 @@ void runMining(const MinerConfig& config) {
         }
     });
 
+    // Configure TLS
+    stratum.setTlsVerification(config.tlsStrict);
+
+    // Configure protocol variant
+    stratum.setProtocol(parseStratumProtocol(config.stratumProtocol));
+
     // Connect to pool
     stratum.setCredentials(config.user, config.password);
     if (!stratum.connectUrl(config.poolUrl)) {
@@ -206,6 +213,16 @@ void runMining(const MinerConfig& config) {
         return;
     }
 
+    // Start API server if configured
+    std::unique_ptr<ApiServer> apiServer;
+    if (config.apiPort > 0) {
+        apiServer = std::make_unique<ApiServer>(config.apiPort, farm, stratum);
+        if (!apiServer->start()) {
+            Log::warning("Failed to start API server, continuing without it");
+            apiServer.reset();
+        }
+    }
+
     // Main loop - print stats periodically
     auto lastStats = std::chrono::steady_clock::now();
 
@@ -243,7 +260,12 @@ void runMining(const MinerConfig& config) {
     // Graceful shutdown
     Log::info("Shutting down...");
 
-    // Stop miners first (they might still be submitting solutions)
+    // Stop API server first
+    if (apiServer) {
+        apiServer->stop();
+    }
+
+    // Stop miners (they might still be submitting solutions)
     farm.stop();
 
     // Wait for pending share submissions with 5 second timeout

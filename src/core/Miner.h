@@ -77,6 +77,60 @@ struct HashRate {
 };
 
 /**
+ * Device health status
+ */
+enum class HealthStatus {
+    Healthy,        // Normal operation
+    Degraded,       // Some issues but still functional
+    Unhealthy,      // Severe issues, may need recovery
+    Failed          // Device has failed
+};
+
+/**
+ * Device health metrics
+ */
+struct DeviceHealth {
+    HealthStatus status{HealthStatus::Healthy};
+
+    // Solution statistics
+    uint64_t validSolutions{0};
+    uint64_t invalidSolutions{0};
+    uint64_t duplicateSolutions{0};
+
+    // Error statistics
+    uint64_t hardwareErrors{0};      // Device/kernel errors
+    uint64_t communicationErrors{0}; // Data transfer errors
+
+    // Performance metrics
+    double peakHashRate{0};          // Highest observed hash rate
+    double currentHashRate{0};       // Current hash rate
+    unsigned hashRateDrops{0};       // Times hash rate dropped significantly
+
+    // Stall detection
+    std::chrono::steady_clock::time_point lastSolutionTime;
+    std::chrono::steady_clock::time_point lastHashUpdate;
+
+    // Get solution validity rate (0.0 - 1.0)
+    double getValidityRate() const {
+        uint64_t total = validSolutions + invalidSolutions;
+        return total > 0 ? static_cast<double>(validSolutions) / total : 1.0;
+    }
+
+    // Get error rate per solution
+    double getErrorRate() const {
+        uint64_t total = validSolutions + invalidSolutions;
+        return total > 0 ? static_cast<double>(hardwareErrors) / total : 0.0;
+    }
+
+    // Check if device appears stalled (no hash updates for given seconds)
+    bool isStalled(unsigned thresholdSeconds = 60) const {
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - lastHashUpdate).count();
+        return elapsed > thresholdSeconds;
+    }
+};
+
+/**
  * Solution callback type
  */
 using SolutionCallback = std::function<void(const Solution&, const std::string&)>;
@@ -180,6 +234,21 @@ public:
      * Check if paused
      */
     bool isPaused() const { return m_paused; }
+
+    /**
+     * Get device health metrics
+     */
+    DeviceHealth getHealth() const;
+
+    /**
+     * Get health status
+     */
+    HealthStatus getHealthStatus() const { return m_health.status; }
+
+    /**
+     * Check if device is healthy
+     */
+    bool isHealthy() const { return m_health.status == HealthStatus::Healthy; }
 
 protected:
     /**
@@ -295,6 +364,35 @@ protected:
      * Clear submitted nonces (call on new job)
      */
     void clearSubmittedNonces();
+
+    // Device health tracking
+    DeviceHealth m_health;
+    mutable std::mutex m_healthMutex;
+
+    /**
+     * Record a valid solution
+     */
+    void recordValidSolution();
+
+    /**
+     * Record an invalid solution
+     */
+    void recordInvalidSolution();
+
+    /**
+     * Record a hardware error
+     */
+    void recordHardwareError();
+
+    /**
+     * Update health status based on metrics
+     */
+    void updateHealthStatus();
+
+    // Health thresholds
+    static constexpr double VALIDITY_THRESHOLD_DEGRADED = 0.95;   // <95% valid = degraded
+    static constexpr double VALIDITY_THRESHOLD_UNHEALTHY = 0.80;  // <80% valid = unhealthy
+    static constexpr double HASHRATE_DROP_THRESHOLD = 0.5;        // 50% drop = concerning
 };
 
 }  // namespace tos

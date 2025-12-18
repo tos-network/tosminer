@@ -144,6 +144,10 @@ bool Miner::verifySolution(uint64_t nonce) {
     // Check for duplicate before expensive verification
     if (isDuplicateNonce(nonce)) {
         Log::warning(getName() + ": Duplicate nonce " + std::to_string(nonce) + " (GPU fault?)");
+        {
+            Guard lock(m_healthMutex);
+            m_health.duplicateSolutions++;
+        }
         return false;
     }
 
@@ -186,11 +190,15 @@ bool Miner::verifySolution(uint64_t nonce) {
         // Record this nonce to prevent duplicate submissions
         recordSubmittedNonce(nonce);
 
+        // Update health metrics
+        recordValidSolution();
+
         Log::info(getName() + ": Verified solution nonce=" + std::to_string(nonce));
         submitSolution(solution);
         return true;
     } else {
         // Invalid solution - GPU reported false positive
+        recordInvalidSolution();
         Log::warning(getName() + ": Invalid solution discarded (nonce=" + std::to_string(nonce) + ")");
         return false;
     }
@@ -232,6 +240,85 @@ void Miner::recordSubmittedNonce(uint64_t nonce) {
 void Miner::clearSubmittedNonces() {
     Guard lock(m_submittedNoncesMutex);
     m_submittedNonces.clear();
+}
+
+DeviceHealth Miner::getHealth() const {
+    Guard lock(m_healthMutex);
+    return m_health;
+}
+
+void Miner::recordValidSolution() {
+    Guard lock(m_healthMutex);
+    m_health.validSolutions++;
+    m_health.lastSolutionTime = std::chrono::steady_clock::now();
+    updateHealthStatus();
+}
+
+void Miner::recordInvalidSolution() {
+    Guard lock(m_healthMutex);
+    m_health.invalidSolutions++;
+    updateHealthStatus();
+}
+
+void Miner::recordHardwareError() {
+    Guard lock(m_healthMutex);
+    m_health.hardwareErrors++;
+    updateHealthStatus();
+}
+
+void Miner::updateHealthStatus() {
+    // Must be called with m_healthMutex held
+
+    // Update current hash rate
+    auto hr = getHashRate();
+    m_health.currentHashRate = hr.rate;
+
+    // Track peak hash rate
+    if (hr.rate > m_health.peakHashRate) {
+        m_health.peakHashRate = hr.rate;
+    }
+
+    // Detect significant hash rate drops
+    if (m_health.peakHashRate > 0 &&
+        m_health.currentHashRate < m_health.peakHashRate * HASHRATE_DROP_THRESHOLD) {
+        m_health.hashRateDrops++;
+    }
+
+    // Update last hash update time
+    m_health.lastHashUpdate = std::chrono::steady_clock::now();
+
+    // Determine health status based on metrics
+    double validity = m_health.getValidityRate();
+    uint64_t totalSolutions = m_health.validSolutions + m_health.invalidSolutions;
+
+    // Need some solutions before making judgments
+    if (totalSolutions < 5) {
+        m_health.status = HealthStatus::Healthy;
+        return;
+    }
+
+    // Check for failure conditions
+    if (m_health.hardwareErrors > 50 || validity < 0.5) {
+        m_health.status = HealthStatus::Failed;
+        Log::error(getName() + ": Device marked as FAILED (validity=" +
+                   std::to_string(validity * 100) + "%, errors=" +
+                   std::to_string(m_health.hardwareErrors) + ")");
+    }
+    // Check for unhealthy conditions
+    else if (validity < VALIDITY_THRESHOLD_UNHEALTHY || m_health.hardwareErrors > 20) {
+        m_health.status = HealthStatus::Unhealthy;
+        Log::warning(getName() + ": Device health UNHEALTHY (validity=" +
+                     std::to_string(validity * 100) + "%)");
+    }
+    // Check for degraded conditions
+    else if (validity < VALIDITY_THRESHOLD_DEGRADED || m_health.hardwareErrors > 5) {
+        m_health.status = HealthStatus::Degraded;
+        Log::debug(getName() + ": Device health degraded (validity=" +
+                   std::to_string(validity * 100) + "%)");
+    }
+    else {
+        m_health.status = HealthStatus::Healthy;
+    }
 }
 
 }  // namespace tos

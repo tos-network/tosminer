@@ -39,6 +39,7 @@ struct MinerConfig {
     std::vector<unsigned> cudaDevices;
 
     // Performance tuning
+    std::string tuningProfile = "default";  // Tuning profile name
     unsigned openclGlobalWorkSize = 16384;
     unsigned openclLocalWorkSize = 1;
     unsigned cudaGridSize = 16384;
@@ -46,6 +47,15 @@ struct MinerConfig {
 
     // Benchmark options
     uint64_t benchmarkIterations = 1000;
+
+    // TLS options
+    bool tlsStrict = false;  // Strict certificate verification
+
+    // API/Monitoring
+    unsigned apiPort = 0;    // 0 = disabled, otherwise JSON-RPC port
+
+    // Stratum protocol variant
+    std::string stratumProtocol = "stratum";  // stratum, ethproxy, ethereumstratum
 
     // Logging
     bool verbose = false;

@@ -103,6 +103,11 @@ set(UTIL_SOURCES
 
 set(STRATUM_SOURCES
     src/stratum/StratumClient.cpp
+    src/stratum/StratumV2.cpp
+)
+
+set(API_SOURCES
+    src/api/ApiServer.cpp
 )
 
 set(MAIN_SOURCES
@@ -139,6 +144,7 @@ set(ALL_SOURCES
     ${TOSHASH_SOURCES}
     ${UTIL_SOURCES}
     ${STRATUM_SOURCES}
+    ${API_SOURCES}
     ${MAIN_SOURCES}
 )
 
