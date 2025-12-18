@@ -364,10 +364,23 @@ uint32_t CLMiner::readBatchResults(unsigned bufferIndex) {
 void CLMiner::processSolutions(unsigned bufferIndex, uint64_t startNonce) {
     uint32_t solutionCount = readBatchResults(bufferIndex);
 
+    // Bounds check - cap solution count to prevent buffer overflow
+    if (solutionCount > MAX_OUTPUTS) {
+        Log::warning(getName() + ": GPU returned invalid solution count " +
+                    std::to_string(solutionCount) + ", capping to " + std::to_string(MAX_OUTPUTS));
+        solutionCount = MAX_OUTPUTS;
+    }
+
     if (solutionCount > 0) {
-        for (uint32_t i = 0; i < solutionCount && i < MAX_OUTPUTS; i++) {
+        for (uint32_t i = 0; i < solutionCount; i++) {
             uint64_t solNonce = m_output[bufferIndex][1 + i * 2] |
                                (static_cast<uint64_t>(m_output[bufferIndex][1 + i * 2 + 1]) << 32);
+
+            // Basic sanity check on nonce value
+            if (solNonce == 0 || solNonce == UINT64_MAX) {
+                Log::warning(getName() + ": Suspicious nonce value " + std::to_string(solNonce) + ", skipping");
+                continue;
+            }
 
             // Verify on CPU before submitting
             verifySolution(solNonce);

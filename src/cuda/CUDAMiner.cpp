@@ -290,7 +290,22 @@ void CUDAMiner::mineLoop() {
         }
 
         // Launch new batch on this stream
-        launchBatch(nonce, streamIdx);
+        if (!launchBatch(nonce, streamIdx)) {
+            // Kernel launch failed - track error and attempt recovery if needed
+            if (recordError()) {
+                Log::warning(getName() + ": Attempting recovery after launch failure...");
+                freeBuffers();
+                if (!init()) {
+                    Log::error(getName() + ": Recovery failed, stopping");
+                    m_running = false;
+                    break;
+                }
+                Log::info(getName() + ": Recovery successful");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            m_batchCount = 0;
+            continue;
+        }
         m_batchNonce[streamIdx] = nonce;
 
         // Advance to next stream and nonce
@@ -305,16 +320,35 @@ void CUDAMiner::mineLoop() {
     }
 }
 
-void CUDAMiner::launchBatch(uint64_t startNonce, unsigned streamIdx) {
+bool CUDAMiner::launchBatch(uint64_t startNonce, unsigned streamIdx) {
+    cudaError_t err;
+
     // Clear output buffer (async)
-    cudaMemsetAsync(d_output[streamIdx], 0, sizeof(uint32_t), m_streams[streamIdx]);
+    err = cudaMemsetAsync(d_output[streamIdx], 0, sizeof(uint32_t), m_streams[streamIdx]);
+    if (err != cudaSuccess) {
+        Log::error(getName() + ": cudaMemsetAsync failed: " + cudaGetErrorString(err));
+        return false;
+    }
 
     // Launch kernel
     toshash_search<<<m_gridSize, m_blockSize, 0, m_streams[streamIdx]>>>(d_output[streamIdx], startNonce);
 
+    // Check for kernel launch errors
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        Log::error(getName() + ": Kernel launch failed: " + cudaGetErrorString(err));
+        return false;
+    }
+
     // Async copy results back to pinned host memory
-    cudaMemcpyAsync(m_output[streamIdx], d_output[streamIdx],
-                    OUTPUT_SIZE, cudaMemcpyDeviceToHost, m_streams[streamIdx]);
+    err = cudaMemcpyAsync(m_output[streamIdx], d_output[streamIdx],
+                          OUTPUT_SIZE, cudaMemcpyDeviceToHost, m_streams[streamIdx]);
+    if (err != cudaSuccess) {
+        Log::error(getName() + ": cudaMemcpyAsync failed: " + cudaGetErrorString(err));
+        return false;
+    }
+
+    return true;
 }
 
 uint32_t CUDAMiner::readResults(unsigned streamIdx) {
@@ -324,10 +358,23 @@ uint32_t CUDAMiner::readResults(unsigned streamIdx) {
 void CUDAMiner::processSolutions(unsigned streamIdx, uint64_t startNonce) {
     uint32_t solutionCount = readResults(streamIdx);
 
+    // Bounds check - cap solution count to prevent buffer overflow
+    if (solutionCount > MAX_OUTPUTS) {
+        Log::warning(getName() + ": GPU returned invalid solution count " +
+                    std::to_string(solutionCount) + ", capping to " + std::to_string(MAX_OUTPUTS));
+        solutionCount = MAX_OUTPUTS;
+    }
+
     if (solutionCount > 0) {
-        for (uint32_t i = 0; i < solutionCount && i < MAX_OUTPUTS; i++) {
+        for (uint32_t i = 0; i < solutionCount; i++) {
             uint64_t solNonce = m_output[streamIdx][1 + i * 2] |
                                (static_cast<uint64_t>(m_output[streamIdx][1 + i * 2 + 1]) << 32);
+
+            // Basic sanity check on nonce value
+            if (solNonce == 0 || solNonce == UINT64_MAX) {
+                Log::warning(getName() + ": Suspicious nonce value " + std::to_string(solNonce) + ", skipping");
+                continue;
+            }
 
             // Verify on CPU before submitting
             verifySolution(solNonce);

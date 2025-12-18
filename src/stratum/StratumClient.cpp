@@ -108,6 +108,9 @@ void StratumClient::disconnect() {
     if (m_requestTimeoutTimer) {
         m_requestTimeoutTimer->cancel();
     }
+    if (m_workTimeoutTimer) {
+        m_workTimeoutTimer->cancel();
+    }
 
 #ifdef WITH_TLS
     if (m_sslSocket) {
@@ -158,6 +161,13 @@ void StratumClient::submitSolution(const Solution& solution, const std::string& 
         return;
     }
 
+    // Get current work for extranonce calculation
+    WorkPackage work;
+    {
+        Guard lock(m_workMutex);
+        work = m_currentWork;
+    }
+
     // Build submission params
     // Standard Stratum format: ["worker", "job_id", "extranonce2", "ntime", "nonce"]
     // TOS simplified format: ["worker", "job_id", "extranonce2", "nonce_hex"]
@@ -165,10 +175,14 @@ void StratumClient::submitSolution(const Solution& solution, const std::string& 
     params.push_back(m_user);
     params.push_back(jobId);
 
-    // Extranonce2 - compute from nonce's high bits (for device identification)
-    // Format: hex string of extraNonce2Size bytes, little-endian
+    // Extranonce2 calculation:
+    // Each device has a unique extranonce2 based on its index in the nonce space.
+    // The found nonce = startNonce + deviceOffset + localOffset
+    // extranonce2 value = deviceOffset + localOffset = nonce - startNonce
+    uint64_t en2Value = solution.nonce - work.startNonce;
+
+    // Format as hex string with proper size (extraNonce2Size bytes, little-endian)
     std::ostringstream en2Hex;
-    uint64_t en2Value = solution.nonce >> (64 - m_extraNonce2Size * 8);
     for (unsigned i = 0; i < m_extraNonce2Size; i++) {
         en2Hex << std::hex << std::setw(2) << std::setfill('0')
                << static_cast<int>((en2Value >> (i * 8)) & 0xFF);
@@ -176,7 +190,6 @@ void StratumClient::submitSolution(const Solution& solution, const std::string& 
     params.push_back(en2Hex.str());
 
     // Nonce as hex (little-endian, 16 hex chars for 64-bit nonce)
-    // This is the actual 64-bit nonce that was tried
     std::ostringstream nonceHex;
     for (int i = 0; i < 8; i++) {
         nonceHex << std::hex << std::setw(2) << std::setfill('0')
@@ -185,7 +198,8 @@ void StratumClient::submitSolution(const Solution& solution, const std::string& 
     params.push_back(nonceHex.str());
 
     uint64_t reqId = sendRequest("mining.submit", params);
-    Log::info("Submitting share (job=" + jobId + ", en2=" + en2Hex.str() + ", nonce=" + nonceHex.str() + ")");
+    Log::info("Submitting share (job=" + jobId + ", dev=" + std::to_string(solution.deviceIndex) +
+              ", en2=" + en2Hex.str() + ", nonce=" + nonceHex.str() + ")");
 
     // Track this as a submit request for response handling
     {
@@ -215,6 +229,10 @@ void StratumClient::ioThread() {
         m_keepaliveTimer = std::make_unique<asio::steady_timer>(m_io);
         m_reconnectTimer = std::make_unique<asio::steady_timer>(m_io);
         m_requestTimeoutTimer = std::make_unique<asio::steady_timer>(m_io);
+        m_workTimeoutTimer = std::make_unique<asio::steady_timer>(m_io);
+
+        // Initialize last work time
+        m_lastWorkTime = std::chrono::steady_clock::now();
 
         // Start connection
         doConnect();
@@ -261,25 +279,50 @@ void StratumClient::doConnect() {
             // Initialize SSL context
             m_sslContext = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv12_client);
 
-            // Use default certificate verification
+            // Use default certificate verification paths
             m_sslContext->set_default_verify_paths();
 
-            // Set verification mode (verify peer certificate)
-            m_sslContext->set_verify_mode(asio::ssl::verify_peer);
+            // Set verification mode based on strict setting
+            if (m_tlsStrictVerify) {
+                // Strict mode: verify peer certificate properly
+                m_sslContext->set_verify_mode(asio::ssl::verify_peer | asio::ssl::verify_fail_if_no_peer_cert);
 
-            // Allow self-signed certificates for pool connections (common in mining)
-            // In production, you might want to make this configurable
-            m_sslContext->set_verify_callback([](bool preverified, asio::ssl::verify_context& ctx) {
-                // For now, accept all certificates (pools often use self-signed)
-                // Log certificate info for debugging
-                char subject[256];
-                X509* cert = X509_STORE_CTX_get_current_cert(ctx.native_handle());
-                if (cert) {
-                    X509_NAME_oneline(X509_get_subject_name(cert), subject, sizeof(subject));
-                    Log::debug("Certificate: " + std::string(subject));
-                }
-                return true;  // Accept certificate
-            });
+                m_sslContext->set_verify_callback([](bool preverified, asio::ssl::verify_context& ctx) {
+                    // Log certificate info
+                    char subject[256];
+                    X509* cert = X509_STORE_CTX_get_current_cert(ctx.native_handle());
+                    if (cert) {
+                        X509_NAME_oneline(X509_get_subject_name(cert), subject, sizeof(subject));
+                        Log::debug("Certificate: " + std::string(subject) +
+                                   " (preverified=" + (preverified ? "yes" : "no") + ")");
+                    }
+                    // In strict mode, only accept if preverified by OpenSSL
+                    if (!preverified) {
+                        int err = X509_STORE_CTX_get_error(ctx.native_handle());
+                        Log::warning("TLS certificate verification failed: " +
+                                   std::string(X509_verify_cert_error_string(err)));
+                    }
+                    return preverified;  // Respect OpenSSL's verification result
+                });
+
+                Log::info("TLS strict verification enabled");
+            } else {
+                // Permissive mode: accept any certificate (pools often use self-signed)
+                m_sslContext->set_verify_mode(asio::ssl::verify_peer);
+
+                m_sslContext->set_verify_callback([](bool preverified, asio::ssl::verify_context& ctx) {
+                    // Log certificate info for debugging
+                    char subject[256];
+                    X509* cert = X509_STORE_CTX_get_current_cert(ctx.native_handle());
+                    if (cert) {
+                        X509_NAME_oneline(X509_get_subject_name(cert), subject, sizeof(subject));
+                        Log::debug("Certificate: " + std::string(subject));
+                    }
+                    return true;  // Accept any certificate
+                });
+
+                Log::debug("TLS permissive mode (accepting any certificate)");
+            }
 
             // Create SSL stream
             m_sslSocket = std::make_unique<asio::ssl::stream<tcp::socket>>(m_io, *m_sslContext);
@@ -351,6 +394,9 @@ void StratumClient::handleConnect(const boost::system::error_code& ec) {
 
     // Schedule keepalive
     scheduleKeepalive();
+
+    // Schedule work timeout monitoring
+    scheduleWorkTimeout();
 }
 
 #ifdef WITH_TLS
@@ -379,6 +425,9 @@ void StratumClient::handleHandshake(const boost::system::error_code& ec) {
 
     // Schedule keepalive
     scheduleKeepalive();
+
+    // Schedule work timeout monitoring
+    scheduleWorkTimeout();
 }
 #endif
 
@@ -764,11 +813,24 @@ void StratumClient::handleMiningNotify(const json& params) {
         // Default to 1 for now
         work.totalDevices = 1;
 
+        // Set receive timestamp for stale work detection
+        work.receivedTime = std::chrono::steady_clock::now();
         work.valid = true;
 
-        // Store and notify
+        // Reset work timeout - we received new work
+        m_lastWorkTime = work.receivedTime;
+        scheduleWorkTimeout();
+
+        // Check if previous work was stale (for logging purposes)
         {
             Guard lock(m_workMutex);
+            if (m_currentWork.valid && m_currentWork.jobId != work.jobId) {
+                unsigned oldWorkAge = m_currentWork.getAgeSeconds();
+                if (oldWorkAge > 30) {
+                    Log::warning("Previous job " + m_currentWork.jobId +
+                                " was " + std::to_string(oldWorkAge) + "s old");
+                }
+            }
             m_currentWork = work;
         }
 
@@ -795,14 +857,21 @@ void StratumClient::handleSetDifficulty(const json& params) {
     double difficulty = params[0].get<double>();
     m_difficulty = difficulty;
 
-    // Calculate and store target (thread-safe)
+    // Calculate difficulty-derived target
+    Hash256 diffTarget;
+    difficultyToTarget(difficulty, diffTarget);
+
+    // Only update stored target if pool hasn't sent explicit target
+    // Pool-sent targets take precedence over difficulty-derived targets
     {
         Guard lock(m_targetMutex);
-        difficultyToTarget(difficulty, m_target);
-        m_hasPoolTarget = false;  // Difficulty-derived, not explicit target
+        if (!m_hasPoolTarget) {
+            m_target = diffTarget;
+            Log::info("Difficulty set to " + std::to_string(difficulty) + " (using derived target)");
+        } else {
+            Log::info("Difficulty set to " + std::to_string(difficulty) + " (keeping pool target)");
+        }
     }
-
-    Log::info("Difficulty set to " + std::to_string(difficulty));
 
     // Update current work's target only if pool hasn't sent explicit target
     {
@@ -893,13 +962,22 @@ void StratumClient::sendKeepalive(const boost::system::error_code& ec) {
 }
 
 void StratumClient::difficultyToTarget(double difficulty, Hash256& target) {
-    // TOS Hash target calculation - full 256-bit precision
-    // target = max_target / difficulty
-    // max_target = 2^256 - 1 (all 0xFF bytes)
-    //
-    // For TOS, we use the standard Bitcoin-style difficulty formula:
+    // Pool difficulty (pdiff) formula:
     // base_target = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
     // target = base_target / difficulty
+    //
+    // In big-endian byte order:
+    // - Bytes 0-3: 0x00 (always zero)
+    // - Bytes 4-5: 0xFF, 0xFF (0xFFFF)
+    // - Bytes 6-31: 0x00 (26 zero bytes)
+    //
+    // This equals 0xFFFF * 2^208
+    //
+    // Known pdiff test vectors:
+    // - difficulty 1:     0x00000000FFFF0000...00
+    // - difficulty 1.5:   0x00000000AAAA0000...00
+    // - difficulty 2:     0x000000007FFF8000...00
+    // - difficulty 256:   0x0000000000FFFF00...00
 
     target.fill(0);
 
@@ -908,72 +986,76 @@ void StratumClient::difficultyToTarget(double difficulty, Hash256& target) {
         return;
     }
 
-    // Base target at difficulty 1 (Bitcoin-style pdiff)
-    // This is: 0x00000000FFFF << 208 = 0x00000000FFFF followed by zeros
-    // As 256-bit: bytes 0-3 = 0x00, bytes 4-5 = 0xFF, rest = 0x00
-    //
-    // For proper 256-bit division, we simulate: base / difficulty
-    // Using long division approach for high precision
-
-    // Base target as 256-bit big-endian:
-    // Difficulty 1 base = 2^224 * 0xFFFF (common pool convention)
-    // = 0x00000000FFFF0000...0000 (32 bytes, big-endian)
-
-    // For simplicity and accuracy, compute using double precision for common
-    // difficulty ranges, then extend to 256 bits
-
-    // Maximum precision double can hold ~53 bits
-    // For very high difficulties, we need to scale
-
     if (difficulty < 1.0) {
-        // Very low difficulty - fill with high value
-        target.fill(0xFF);
-        // Clear leading bytes based on difficulty
-        double invDiff = 1.0 / difficulty;
-        if (invDiff < 256) {
-            target[0] = static_cast<uint8_t>(255.0 / difficulty);
-        }
+        // Difficulty < 1 means target > base
+        // For safety, just use base target
+        target[4] = 0xFF;
+        target[5] = 0xFF;
         return;
     }
 
-    // Standard calculation: target = 2^256 / difficulty / 2^32
-    // This gives us a value that fits in the target format
+#if defined(__SIZEOF_INT128__)
+    // Use fixed-point arithmetic to handle fractional difficulties correctly
+    // Scale difficulty by 2^32 to preserve fractional precision
+    //
+    // target = base / difficulty
+    //        = (base * 2^32) / (difficulty * 2^32)
+    //
+    // The scaled dividend is base * 2^32 = 0xFFFF << 240 (a 36-byte number)
+    // The scaled divisor is difficulty * 2^32 (fits in ~96 bits for reasonable difficulties)
+    //
+    // Due to the 2^32 scaling, quotient bytes are shifted by 4 positions,
+    // so we process 36 dividend bytes but offset the output by 4.
 
-    // Use 2^224 * 0xFFFF as base (pdiff base)
-    // base = 0xFFFF * 2^208
-    const double baseMultiplier = 0xFFFF;
-    double scaledTarget = baseMultiplier / difficulty;
+    __uint128_t diffScaled = static_cast<__uint128_t>(difficulty * 4294967296.0);  // 2^32
+    if (diffScaled == 0) diffScaled = 1;
 
-    // scaledTarget now represents the value to place at byte offset 4 (after 4 zero bytes)
-    // We need to expand this to fill bytes 4 onwards
+    __uint128_t remainder = 0;
 
-    // Split into integer and fractional parts
-    // Position the result starting at byte 4 (big-endian)
+    for (int i = 0; i < 36; i++) {
+        // Dividend bytes: 00 at 0-3, FF at 4-5, 00 at 6-35
+        uint8_t dividendByte = (i == 4 || i == 5) ? 0xFF : 0;
 
-    // First 4 bytes are always 0 for pdiff-based targets
-    target[0] = 0;
-    target[1] = 0;
-    target[2] = 0;
-    target[3] = 0;
+        remainder = (remainder << 8) | dividendByte;
 
-    // Calculate each subsequent byte
-    // scaledTarget / 256^(28-i) for bytes 4-31
+        __uint128_t q = remainder / diffScaled;
 
-    double remaining = scaledTarget;
-
-    // Bytes 4-5 hold the main value from 0xFFFF / difficulty
-    for (int i = 4; i < 32 && remaining > 0; i++) {
-        // How many "units" of 256^(31-i) fit in remaining?
-        double unitValue = std::pow(256.0, 31 - i);
-        if (unitValue > 0 && remaining >= unitValue) {
-            double byteVal = std::floor(remaining / unitValue);
-            if (byteVal > 255) byteVal = 255;
-            target[i] = static_cast<uint8_t>(byteVal);
-            remaining -= byteVal * unitValue;
+        // Output position is shifted by 4 due to 2^32 scaling
+        int outputPos = i - 4;
+        if (outputPos >= 0 && outputPos < 32) {
+            target[outputPos] = (q > 255) ? 255 : static_cast<uint8_t>(q);
         }
-    }
 
-    // Ensure at least some non-zero value for very high difficulty
+        remainder = remainder % diffScaled;
+    }
+#else
+    // Fallback for systems without 128-bit integers
+    // Use double precision arithmetic (handles fractional difficulties naturally)
+    //
+    // quotient = 0xFFFF / difficulty
+    // This represents the value that needs to be placed starting at byte 4
+
+    double quotient = 65535.0 / difficulty;
+
+    // Extract bytes using positional scaling
+    // byte[i] = floor(quotient * 2^(8*i - 40)) % 256
+    for (int i = 4; i < 32; i++) {
+        int bitShift = 8 * i - 40;
+        double scaled;
+        if (bitShift >= 0) {
+            scaled = quotient * std::pow(2.0, bitShift);
+        } else {
+            scaled = quotient / std::pow(2.0, -bitShift);
+        }
+
+        double byteVal = std::fmod(std::floor(scaled), 256.0);
+        if (byteVal < 0) byteVal = 0;
+        if (byteVal > 255) byteVal = 255;
+        target[i] = static_cast<uint8_t>(byteVal);
+    }
+#endif
+
+    // Verify we have a non-zero target
     bool allZero = true;
     for (int i = 0; i < 32; i++) {
         if (target[i] != 0) {
@@ -982,8 +1064,7 @@ void StratumClient::difficultyToTarget(double difficulty, Hash256& target) {
         }
     }
     if (allZero) {
-        // Minimum target - set last byte to 1
-        target[31] = 1;
+        target[31] = 1;  // Minimum target
     }
 }
 
@@ -1071,6 +1152,48 @@ void StratumClient::notifyConnectionChange(bool connected) {
     if (m_connectionCallback) {
         m_connectionCallback(connected);
     }
+}
+
+void StratumClient::scheduleWorkTimeout() {
+    if (!m_running || !m_workTimeoutTimer) return;
+
+    // Cancel any existing timer
+    m_workTimeoutTimer->cancel();
+
+    // Schedule check in WORK_TIMEOUT seconds
+    m_workTimeoutTimer->expires_after(std::chrono::seconds(WORK_TIMEOUT));
+    m_workTimeoutTimer->async_wait([this](const boost::system::error_code& ec) {
+        handleWorkTimeout(ec);
+    });
+}
+
+void StratumClient::handleWorkTimeout(const boost::system::error_code& ec) {
+    if (ec || !m_running) return;
+
+    // Only check if we're authorized (actively mining)
+    if (m_state != StratumState::Authorized) {
+        // Not yet mining, reschedule
+        scheduleWorkTimeout();
+        return;
+    }
+
+    // Check how long since last work
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - m_lastWorkTime).count();
+
+    if (elapsed >= WORK_TIMEOUT) {
+        Log::warning("No new work received for " + std::to_string(elapsed) +
+                    " seconds, reconnecting...");
+        handleReconnect();
+        return;
+    }
+
+    // Reschedule for remaining time
+    unsigned remaining = WORK_TIMEOUT - static_cast<unsigned>(elapsed);
+    m_workTimeoutTimer->expires_after(std::chrono::seconds(remaining));
+    m_workTimeoutTimer->async_wait([this](const boost::system::error_code& ec) {
+        handleWorkTimeout(ec);
+    });
 }
 
 }  // namespace tos

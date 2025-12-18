@@ -125,6 +125,19 @@ public:
     static bool isTlsSupported();
 
     /**
+     * Set TLS certificate verification mode
+     *
+     * @param strict If true, verify server certificates (reject invalid/self-signed)
+     *               If false, accept any certificate (insecure, but common for pools)
+     */
+    void setTlsVerification(bool strict) { m_tlsStrictVerify = strict; }
+
+    /**
+     * Check if strict TLS verification is enabled
+     */
+    bool isTlsStrict() const { return m_tlsStrictVerify; }
+
+    /**
      * Disconnect from pool
      */
     void disconnect();
@@ -311,6 +324,16 @@ private:
     void cleanupTimedOutRequests(const boost::system::error_code& ec);
 
     /**
+     * Schedule work timeout check
+     */
+    void scheduleWorkTimeout();
+
+    /**
+     * Handle work timeout (no new work received)
+     */
+    void handleWorkTimeout(const boost::system::error_code& ec);
+
+    /**
      * Convert hex string to bytes
      */
     bool hexToBytes(const std::string& hex, uint8_t* bytes, size_t len);
@@ -338,6 +361,7 @@ private:
     std::unique_ptr<boost::asio::steady_timer> m_keepaliveTimer;
     std::unique_ptr<boost::asio::steady_timer> m_reconnectTimer;
     std::unique_ptr<boost::asio::steady_timer> m_requestTimeoutTimer;
+    std::unique_ptr<boost::asio::steady_timer> m_workTimeoutTimer;
 
     // Socket write mutex (for thread-safe sends from multiple miners)
     std::mutex m_sendMutex;
@@ -396,12 +420,19 @@ private:
     unsigned m_reconnectAttempts{0};
     static constexpr unsigned MAX_RECONNECT_ATTEMPTS = 10;
 
+    // TLS settings
+    bool m_tlsStrictVerify{false};  // Default: accept any cert (pools often use self-signed)
+
     // Keepalive settings
     static constexpr unsigned KEEPALIVE_INTERVAL = 30;  // seconds
 
     // Request timeout settings
     static constexpr unsigned REQUEST_TIMEOUT = 30;  // seconds
     static constexpr unsigned REQUEST_CLEANUP_INTERVAL = 10;  // seconds
+
+    // Work timeout settings
+    static constexpr unsigned WORK_TIMEOUT = 60;  // seconds without new work triggers reconnect
+    std::chrono::steady_clock::time_point m_lastWorkTime;
 };
 
 }  // namespace tos

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <chrono>
 
 namespace tos {
 
@@ -60,6 +61,9 @@ struct WorkPackage {
     // Is this work package valid?
     bool valid;
 
+    // Timestamp when this work was received
+    std::chrono::steady_clock::time_point receivedTime;
+
     WorkPackage()
         : jobId("")
         , header{}
@@ -72,6 +76,7 @@ struct WorkPackage {
         , seedHash{}
         , headerHash{}
         , valid(false)
+        , receivedTime(std::chrono::steady_clock::now())
     {}
 
     // Check if work package is valid
@@ -90,6 +95,20 @@ struct WorkPackage {
         seedHash.fill(0);
         headerHash.fill(0);
         valid = false;
+        receivedTime = std::chrono::steady_clock::now();
+    }
+
+    // Get age of this work package in seconds
+    unsigned getAgeSeconds() const {
+        auto now = std::chrono::steady_clock::now();
+        return static_cast<unsigned>(
+            std::chrono::duration_cast<std::chrono::seconds>(now - receivedTime).count()
+        );
+    }
+
+    // Check if work is stale (older than given threshold in seconds)
+    bool isStale(unsigned thresholdSeconds = 60) const {
+        return getAgeSeconds() > thresholdSeconds;
     }
 
     // Get starting nonce for a specific device

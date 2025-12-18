@@ -70,9 +70,11 @@ struct Solution {
     Nonce nonce;
     Hash256 hash;
     Hash256 mixHash;  // For compatibility, may not be used
+    unsigned deviceIndex;  // Which device found this solution
 
-    Solution() : nonce(0), hash{}, mixHash{} {}
-    Solution(Nonce n, const Hash256& h) : nonce(n), hash(h), mixHash{} {}
+    Solution() : nonce(0), hash{}, mixHash{}, deviceIndex(0) {}
+    Solution(Nonce n, const Hash256& h, unsigned devIdx = 0)
+        : nonce(n), hash(h), mixHash{}, deviceIndex(devIdx) {}
 };
 
 // Mining statistics snapshot (copyable)

@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_set>
 
 namespace tos {
 
@@ -273,6 +274,27 @@ protected:
      * Reset error counter (call after successful operation)
      */
     void clearErrors() { m_consecutiveErrors = 0; }
+
+    // Duplicate solution prevention
+    std::unordered_set<uint64_t> m_submittedNonces;
+    mutable std::mutex m_submittedNoncesMutex;
+    static constexpr size_t MAX_SUBMITTED_NONCES = 1000;  // Max nonces to track
+
+    /**
+     * Check if nonce was already submitted
+     * @return true if duplicate (already submitted), false if new
+     */
+    bool isDuplicateNonce(uint64_t nonce);
+
+    /**
+     * Record a submitted nonce
+     */
+    void recordSubmittedNonce(uint64_t nonce);
+
+    /**
+     * Clear submitted nonces (call on new job)
+     */
+    void clearSubmittedNonces();
 };
 
 }  // namespace tos

@@ -85,8 +85,9 @@ private:
      *
      * @param startNonce Starting nonce
      * @param streamIndex Which stream to use
+     * @return true if launch succeeded, false on error
      */
-    void launchBatch(uint64_t startNonce, unsigned streamIndex);
+    bool launchBatch(uint64_t startNonce, unsigned streamIndex);
 
     /**
      * Read results from specified stream

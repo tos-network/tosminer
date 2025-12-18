@@ -188,6 +188,10 @@ install(TARGETS tosminer
     RUNTIME DESTINATION bin
 )
 
+# Test target
+add_executable(test_target tests/test_target.cpp)
+target_compile_features(test_target PRIVATE cxx_std_17)
+
 # Print configuration summary
 message(STATUS "")
 message(STATUS "=== TOS Miner Configuration ===")

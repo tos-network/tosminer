@@ -60,10 +60,19 @@ void Miner::stop() {
 }
 
 void Miner::setWork(const WorkPackage& work) {
+    bool jobChanged = false;
     {
         Guard lock(m_workMutex);
+        // Check if job ID changed (new work)
+        jobChanged = (work.jobId != m_work.jobId);
         m_work = work;
     }
+
+    // Clear submitted nonces when starting a new job
+    if (jobChanged) {
+        clearSubmittedNonces();
+    }
+
     m_newWork = true;
 }
 
@@ -132,6 +141,12 @@ bool Miner::verifySolution(uint64_t nonce) {
         return false;
     }
 
+    // Check for duplicate before expensive verification
+    if (isDuplicateNonce(nonce)) {
+        Log::warning(getName() + ": Duplicate nonce " + std::to_string(nonce) + " (GPU fault?)");
+        return false;
+    }
+
     // Prepare input with nonce
     std::array<uint8_t, INPUT_SIZE> input;
     std::memcpy(input.data(), work.header.data(), INPUT_SIZE);
@@ -151,6 +166,10 @@ bool Miner::verifySolution(uint64_t nonce) {
         Solution solution;
         solution.nonce = nonce;
         solution.hash = hash;
+        solution.deviceIndex = m_index;  // Track which device found it
+
+        // Record this nonce to prevent duplicate submissions
+        recordSubmittedNonce(nonce);
 
         Log::info(getName() + ": Verified solution nonce=" + std::to_string(nonce));
         submitSolution(solution);
@@ -176,6 +195,28 @@ bool Miner::recordError() {
         return true;  // Request recovery
     }
     return false;
+}
+
+bool Miner::isDuplicateNonce(uint64_t nonce) {
+    Guard lock(m_submittedNoncesMutex);
+    return m_submittedNonces.find(nonce) != m_submittedNonces.end();
+}
+
+void Miner::recordSubmittedNonce(uint64_t nonce) {
+    Guard lock(m_submittedNoncesMutex);
+
+    // If we've hit the limit, clear half the oldest entries
+    // (simple approach - clear all and start fresh)
+    if (m_submittedNonces.size() >= MAX_SUBMITTED_NONCES) {
+        m_submittedNonces.clear();
+    }
+
+    m_submittedNonces.insert(nonce);
+}
+
+void Miner::clearSubmittedNonces() {
+    Guard lock(m_submittedNoncesMutex);
+    m_submittedNonces.clear();
 }
 
 }  // namespace tos

@@ -120,19 +120,25 @@ void Farm::resume() {
 }
 
 void Farm::setWork(const WorkPackage& work) {
+    Guard lock(m_minersMutex);
+
+    // Create a copy with totalDevices set to actual miner count
+    WorkPackage distributedWork = work;
+    distributedWork.totalDevices = static_cast<unsigned>(m_miners.size());
+
     {
-        Guard lock(m_workMutex);
-        m_currentWork = work;
+        Guard workLock(m_workMutex);
+        m_currentWork = distributedWork;
     }
 
-    Guard lock(m_minersMutex);
     for (auto& miner : m_miners) {
-        miner->setWork(work);
+        miner->setWork(distributedWork);
     }
 
     std::ostringstream ss;
     ss << "New work: job=" << work.jobId
-       << " height=" << work.height;
+       << " height=" << work.height
+       << " devices=" << distributedWork.totalDevices;
     Log::info(ss.str());
 }
 
