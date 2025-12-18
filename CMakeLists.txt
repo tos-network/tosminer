@@ -199,6 +199,23 @@ install(TARGETS tosminer
 add_executable(test_target tests/test_target.cpp)
 target_compile_features(test_target PRIVATE cxx_std_17)
 
+# GPU monitor test
+add_executable(test_gpu_monitor tests/test_gpu_monitor.cpp src/util/GpuMonitor.cpp src/util/Log.cpp)
+target_include_directories(test_gpu_monitor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(test_gpu_monitor PRIVATE cxx_std_17)
+if(WITH_CUDA)
+    target_compile_definitions(test_gpu_monitor PRIVATE WITH_CUDA)
+endif()
+if(WITH_OPENCL)
+    target_compile_definitions(test_gpu_monitor PRIVATE WITH_OPENCL)
+endif()
+
+# API response test
+add_executable(test_api_response tests/test_api_response.cpp)
+target_include_directories(test_api_response PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_api_response PRIVATE nlohmann_json::nlohmann_json)
+target_compile_features(test_api_response PRIVATE cxx_std_17)
+
 # Print configuration summary
 message(STATUS "")
 message(STATUS "=== TOS Miner Configuration ===")
