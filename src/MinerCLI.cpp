@@ -35,7 +35,7 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
 
     po::options_description tls("TLS options");
     tls.add_options()
-        ("tls-strict", "Enable strict TLS certificate verification")
+        ("tls-no-strict", "Disable strict TLS certificate verification (for self-signed certs)")
     ;
 
     po::options_description api("API options");
@@ -168,8 +168,8 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
             config.cudaBlockSize = vm["cuda-block"].as<unsigned>();
         }
 
-        // TLS options
-        config.tlsStrict = vm.count("tls-strict") > 0;
+        // TLS options (strict by default, --tls-no-strict disables)
+        config.tlsStrict = vm.count("tls-no-strict") == 0;
 
         // API options
         config.apiPort = vm["api-port"].as<unsigned>();
@@ -204,8 +204,8 @@ Mining Options:
   --stratum-protocol PROTO  Protocol variant: stratum, ethproxy, ethereumstratum
 
 TLS Options:
-  --tls-strict              Enable strict TLS certificate verification
-                            (default: accept any certificate)
+  --tls-no-strict           Disable strict TLS certificate verification
+                            (default: strict verification enabled)
 
 API Options:
   --api-port PORT           JSON-RPC API port for monitoring (0 = disabled)
@@ -235,8 +235,10 @@ Examples:
   tosminer -L                              List devices
   tosminer -G -P stratum+tcp://pool:3333 -u wallet.worker
                                            Mine with OpenCL
-  tosminer -P stratum+ssl://pool:3334 -u wallet --tls-strict
+  tosminer -P stratum+ssl://pool:3334 -u wallet
                                            Mine with TLS (strict verification)
+  tosminer -P stratum+ssl://pool:3334 -u wallet --tls-no-strict
+                                           Mine with TLS (self-signed certs)
   tosminer -P stratum+tcp://pool:3333 -u wallet --api-port 3000
                                            Mine with monitoring API on port 3000
 

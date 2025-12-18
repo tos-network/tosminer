@@ -111,6 +111,9 @@ struct WorkPackage {
         return getAgeSeconds() > thresholdSeconds;
     }
 
+    // Maximum number of devices to prevent nonce space becoming too small
+    static constexpr unsigned MAX_DEVICES = 256;
+
     // Get starting nonce for a specific device
     // Divides the nonce space evenly among all devices
     // Each device gets: (2^64 / totalDevices) nonces starting at their offset
@@ -119,12 +122,24 @@ struct WorkPackage {
             return startNonce;
         }
 
+        // Clamp totalDevices to prevent nonce space becoming too small
+        unsigned clampedDevices = (totalDevices > MAX_DEVICES) ? MAX_DEVICES : totalDevices;
+
         // Calculate the size of each device's nonce space
         // Using the extranonce2 space, each device gets a portion
-        uint64_t spacePerDevice = UINT64_MAX / totalDevices;
+        uint64_t spacePerDevice = UINT64_MAX / clampedDevices;
+
+        // Clamp deviceIndex to valid range
+        unsigned clampedIndex = (deviceIndex >= clampedDevices) ? (clampedDevices - 1) : deviceIndex;
 
         // Device's base offset
-        uint64_t deviceOffset = spacePerDevice * deviceIndex;
+        uint64_t deviceOffset = spacePerDevice * clampedIndex;
+
+        // Check for wrap: if startNonce + deviceOffset would overflow, clamp to max
+        if (startNonce > UINT64_MAX - deviceOffset) {
+            // Would wrap, return maximum safe value
+            return UINT64_MAX - spacePerDevice + 1;
+        }
 
         // Combine with startNonce (which may include extranonce1)
         return startNonce + deviceOffset;
@@ -137,10 +152,14 @@ struct WorkPackage {
             return 0;
         }
 
+        // Clamp totalDevices and deviceIndex consistently
+        unsigned clampedDevices = (totalDevices > MAX_DEVICES) ? MAX_DEVICES : totalDevices;
+        unsigned clampedIndex = (deviceIndex >= clampedDevices) ? (clampedDevices - 1) : deviceIndex;
+
         // Each device has a unique extranonce2 prefix based on its index
         // The remaining bits are used for incrementing nonce within device
-        uint64_t spacePerDevice = UINT64_MAX / totalDevices;
-        return spacePerDevice * deviceIndex;
+        uint64_t spacePerDevice = UINT64_MAX / clampedDevices;
+        return spacePerDevice * clampedIndex;
     }
 
     // Get extranonce2 as hex string (for Stratum submission)

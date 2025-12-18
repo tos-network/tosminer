@@ -103,10 +103,13 @@ latex/
 perf.data
 perf.data.old
 
-# Core dumps (but not src/core directory)
+# Core dumps
 /core
 core.*
 vgcore.*
 
-# Local todo list
-TODO.md
+# Configuration files (use .example versions)
+config.yaml
+config.json
+*.local.yaml
+*.local.json

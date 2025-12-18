@@ -478,6 +478,10 @@ void StratumClient::handleHandshake(const boost::system::error_code& ec) {
 void StratumClient::startRead() {
     if (!m_running) return;
 
+    // Note: m_readBuffer has max_size=MAX_LINE_LENGTH set at construction.
+    // If the buffer fills without finding a newline, async_read_until returns
+    // asio::error::not_found, which is handled in handleRead().
+
 #ifdef WITH_TLS
     if (m_useTls) {
         if (!m_sslSocket) return;
@@ -503,12 +507,30 @@ void StratumClient::handleRead(const boost::system::error_code& ec, size_t bytes
 
     if (ec) {
         if (ec != asio::error::operation_aborted) {
-            m_lastError = ec.message();
+            // Check if buffer overflow (no newline found within MAX_LINE_LENGTH)
+            if (ec == asio::error::not_found) {
+                m_lastError = "Buffer overflow: no newline within " +
+                              std::to_string(MAX_LINE_LENGTH) + " bytes, disconnecting";
+            } else {
+                m_lastError = ec.message();
+            }
             Log::error("Read error: " + m_lastError);
+            // Clear buffer to avoid immediate not_found on reconnect.
+            m_readBuffer.consume(m_readBuffer.size());
             m_state = StratumState::Disconnected;
             notifyConnectionChange(false);
             handleReconnect();
         }
+        return;
+    }
+
+    // Additional sanity check for line length (should not trigger with streambuf max_size)
+    if (bytes > MAX_LINE_LENGTH) {
+        m_lastError = "Line too long (" + std::to_string(bytes) + " bytes), disconnecting";
+        Log::error(m_lastError);
+        m_state = StratumState::Disconnected;
+        notifyConnectionChange(false);
+        handleReconnect();
         return;
     }
 
@@ -600,19 +622,48 @@ void StratumClient::handleResponse(const json& response) {
             handleReconnect();
         } else {
             // Parse subscription result
-            // Format: [["mining.notify", "session_id"], extranonce1, extranonce2_size]
+            // Format 1: [[["mining.notify", "id"], ["mining.set_difficulty", "id"]], extranonce1, extranonce2_size]
+            // Format 2: [["mining.notify", "id"], extranonce1, extranonce2_size]
             const auto& result = response["result"];
             if (result.is_array() && result.size() >= 2) {
-                if (result[0].is_array() && result[0].size() >= 2) {
-                    m_sessionId = result[0][1].get<std::string>();
+                // Extract session ID from subscriptions array
+                if (result[0].is_array() && !result[0].empty()) {
+                    // Check if it's nested (array of arrays) or flat
+                    if (result[0][0].is_array()) {
+                        // Nested format: [[["mining.notify", "id"], ...]]
+                        // Get session_id from first subscription pair
+                        if (result[0][0].size() >= 2 && result[0][0][1].is_string()) {
+                            m_sessionId = result[0][0][1].get<std::string>();
+                        }
+                    } else if (result[0][0].is_string() && result[0].size() >= 2) {
+                        // Flat format: [["mining.notify", "id"], ...]
+                        if (result[0][1].is_string()) {
+                            m_sessionId = result[0][1].get<std::string>();
+                        }
+                    }
                 }
                 m_extraNonce1 = result[1].get<std::string>();
                 if (result.size() >= 3) {
                     m_extraNonce2Size = result[2].get<unsigned>();
+
+                    // Validate extranonce2_size: minimum 4 bytes to prevent nonce space exhaustion
+                    // With <4 bytes, miners will rapidly collide on nonces
+                    constexpr unsigned MIN_EXTRANONCE2_SIZE = 4;
+                    constexpr unsigned MAX_EXTRANONCE2_SIZE = 8;  // Maximum we can handle in uint64_t
+                    if (m_extraNonce2Size < MIN_EXTRANONCE2_SIZE) {
+                        Log::warning("Pool extranonce2_size=" + std::to_string(m_extraNonce2Size) +
+                                     " is too small, using minimum of " + std::to_string(MIN_EXTRANONCE2_SIZE));
+                        m_extraNonce2Size = MIN_EXTRANONCE2_SIZE;
+                    } else if (m_extraNonce2Size > MAX_EXTRANONCE2_SIZE) {
+                        Log::warning("Pool extranonce2_size=" + std::to_string(m_extraNonce2Size) +
+                                     " exceeds maximum, using " + std::to_string(MAX_EXTRANONCE2_SIZE));
+                        m_extraNonce2Size = MAX_EXTRANONCE2_SIZE;
+                    }
                 }
             }
 
-            Log::info("Subscribed (session=" + m_sessionId + ", extranonce1=" + m_extraNonce1 + ")");
+            Log::info("Subscribed (session=" + m_sessionId + ", extranonce1=" + m_extraNonce1 +
+                      ", extranonce2_size=" + std::to_string(m_extraNonce2Size) + ")");
             m_state = StratumState::Subscribed;
 
             // Now authorize
@@ -1086,6 +1137,17 @@ void StratumClient::difficultyToTarget(double difficulty, Hash256& target) {
         target[4] = 0xFF;
         target[5] = 0xFF;
         return;
+    }
+
+    // Clamp difficulty to prevent overflow/precision loss in fixed-point arithmetic
+    // Max safe value: 2^52 (double mantissa precision) / 2^32 = 2^20 ≈ 1M
+    // We use 1e15 as a practical upper bound which is well within double precision
+    // and produces a near-zero target (essentially impossible to find)
+    constexpr double MAX_SAFE_DIFFICULTY = 1e15;
+    if (difficulty > MAX_SAFE_DIFFICULTY) {
+        Log::warning("Difficulty " + std::to_string(difficulty) +
+                     " exceeds safe limit, clamping to " + std::to_string(MAX_SAFE_DIFFICULTY));
+        difficulty = MAX_SAFE_DIFFICULTY;
     }
 
 #if defined(__SIZEOF_INT128__)

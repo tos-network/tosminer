@@ -49,7 +49,7 @@ struct MinerConfig {
     uint64_t benchmarkIterations = 1000;
 
     // TLS options
-    bool tlsStrict = false;  // Strict certificate verification
+    bool tlsStrict = true;  // Strict certificate verification (default: enabled for security)
 
     // API/Monitoring
     unsigned apiPort = 0;    // 0 = disabled, otherwise JSON-RPC port

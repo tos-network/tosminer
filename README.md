@@ -122,7 +122,7 @@ tosminer -U -P stratum+tcp://pool.example.com:3333 -u wallet.worker --profile rt
 | `-u, --user USER` | Pool username (wallet.worker) |
 | `-p, --password PASS` | Pool password (default: x) |
 | `--stratum-protocol PROTO` | Protocol: stratum, ethproxy, ethereumstratum |
-| `--tls-strict` | Enable strict TLS certificate verification |
+| `--tls-no-strict` | Disable strict TLS verification (for self-signed certs) |
 
 #### Performance Options
 | Option | Description |
@@ -297,19 +297,60 @@ The miner isolates failed GPUs and continues mining with healthy devices. Failed
 
 ### 6. How do I use TLS/SSL for secure pool connections?
 
-Use `stratum+ssl://` instead of `stratum+tcp://`:
+Use `stratum+ssl://` instead of `stratum+tcp://`. TLS connections use strict certificate verification by default:
 ```
 tosminer -G -P stratum+ssl://pool.example.com:3334 -u wallet.worker
 ```
 
-For strict certificate verification:
+For pools with self-signed certificates, disable strict verification:
 ```
-tosminer -G -P stratum+ssl://pool.example.com:3334 -u wallet.worker --tls-strict
+tosminer -G -P stratum+ssl://pool.example.com:3334 -u wallet.worker --tls-no-strict
 ```
 
 ### 7. Does tosminer support dual mining?
 
 No, tosminer is dedicated to TOS Hash V3 only.
+
+## Security & Protocol Limits
+
+tosminer implements several security measures to protect against malicious or misconfigured pools:
+
+### TLS Certificate Verification
+
+By default, TLS connections use **strict certificate verification** to prevent MITM attacks. For pools using self-signed certificates, you can disable strict verification:
+
+```sh
+# Strict verification (default) - recommended for production
+tosminer -G -P stratum+ssl://pool.example.com:3334 -u wallet.worker
+
+# Permissive mode (for self-signed certificates)
+tosminer -G -P stratum+ssl://pool.example.com:3334 -u wallet.worker --tls-no-strict
+```
+
+### Difficulty Limits
+
+The miner clamps pool difficulty to a maximum of **1e15** (1 quadrillion). This prevents:
+- Overflow in target calculation
+- Precision loss in fixed-point arithmetic
+
+If a pool sends difficulty > 1e15, it will be locally clamped with a warning. Pool operators should ensure their difficulty settings stay within this limit.
+
+| Limit | Value | Reason |
+|-------|-------|--------|
+| Max difficulty | 1e15 | Prevents overflow/precision loss |
+| Min extranonce2_size | 4 bytes | Prevents nonce space exhaustion |
+| Max extranonce2_size | 8 bytes | uint64_t storage limit |
+| Max devices | 256 | Ensures adequate nonce space per device |
+| Max line length | 64 KB | Prevents memory exhaustion attacks |
+
+### Protocol Protections
+
+| Protection | Description |
+|------------|-------------|
+| Buffer hard limit | Read buffer has 64 KB max_size; async_read fails if exceeded |
+| Line length check | Additional validation after successful read |
+| Nonce space validation | Ensures each device has sufficient nonce range |
+| Extranonce2 size validation | Rejects unsafe extranonce2 sizes (< 4 bytes) |
 
 ## Building from Source
 

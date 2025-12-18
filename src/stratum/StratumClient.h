@@ -405,7 +405,7 @@ private:
     std::unique_ptr<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> m_sslSocket;
     bool m_useTls{false};  // Whether current connection uses TLS
 #endif
-    boost::asio::streambuf m_readBuffer;
+    boost::asio::streambuf m_readBuffer{MAX_LINE_LENGTH};  // Hard limit on buffer size
     std::unique_ptr<boost::asio::steady_timer> m_keepaliveTimer;
     std::unique_ptr<boost::asio::steady_timer> m_reconnectTimer;
     std::unique_ptr<boost::asio::steady_timer> m_requestTimeoutTimer;
@@ -470,7 +470,9 @@ private:
     static constexpr unsigned MAX_RECONNECT_ATTEMPTS = 10;
 
     // TLS settings
-    bool m_tlsStrictVerify{false};  // Default: accept any cert (pools often use self-signed)
+    // Default: strict verification to prevent MITM attacks
+    // Use setTlsVerification(false) for pools with self-signed certificates
+    bool m_tlsStrictVerify{true};
 
     // Protocol variant
     StratumProtocol m_protocol{StratumProtocol::Stratum};
@@ -481,6 +483,10 @@ private:
     // Request timeout settings
     static constexpr unsigned REQUEST_TIMEOUT = 30;  // seconds
     static constexpr unsigned REQUEST_CLEANUP_INTERVAL = 10;  // seconds
+
+    // Maximum line length for Stratum messages (64 KB)
+    // Protects against malicious pools sending extremely long lines
+    static constexpr size_t MAX_LINE_LENGTH = 65536;
 
     // Work timeout settings
     static constexpr unsigned WORK_TIMEOUT = 60;  // seconds without new work triggers reconnect
