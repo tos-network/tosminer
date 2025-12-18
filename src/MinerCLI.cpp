@@ -3,6 +3,7 @@
  */
 
 #include "MinerCLI.h"
+#include "Version.h"
 #include <boost/program_options.hpp>
 #include <iostream>
 #include <sstream>
@@ -176,7 +177,7 @@ Examples:
 }
 
 void MinerCLI::printVersion() {
-    std::cout << "TOS Miner v1.0.0" << std::endl;
+    std::cout << getVersionString() << std::endl;
     std::cout << "TOS Hash V3 GPU/ASIC Mining Software" << std::endl;
     std::cout << std::endl;
     std::cout << "Build options:" << std::endl;
@@ -189,6 +190,11 @@ void MinerCLI::printVersion() {
     std::cout << "  CUDA: enabled" << std::endl;
 #else
     std::cout << "  CUDA: disabled" << std::endl;
+#endif
+#ifdef WITH_TLS
+    std::cout << "  TLS:    enabled" << std::endl;
+#else
+    std::cout << "  TLS:    disabled" << std::endl;
 #endif
 }
 

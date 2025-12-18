@@ -5,6 +5,8 @@
 #include "Farm.h"
 #include "util/Log.h"
 #include <sstream>
+#include <future>
+#include <vector>
 
 #ifdef WITH_OPENCL
 // OpenCL device enumeration will be in CLMiner
@@ -28,6 +30,88 @@ void Farm::addMiner(std::unique_ptr<Miner> miner) {
     m_miners.push_back(std::move(miner));
 }
 
+size_t Farm::activeMinerCount() const {
+    Guard lock(m_failedMinersMutex);
+    return m_miners.size() - m_failedMiners.size();
+}
+
+bool Farm::isMinerFailed(unsigned index) const {
+    Guard lock(m_failedMinersMutex);
+    return m_failedMiners.find(index) != m_failedMiners.end();
+}
+
+void Farm::markMinerFailed(unsigned index) {
+    {
+        Guard lock(m_failedMinersMutex);
+        if (m_failedMiners.find(index) != m_failedMiners.end()) {
+            return;  // Already marked as failed
+        }
+        m_failedMiners.insert(index);
+    }
+
+    Guard lock(m_minersMutex);
+    if (index < m_miners.size()) {
+        Log::warning("Miner " + m_miners[index]->getName() + " marked as failed, isolating from work distribution");
+        m_miners[index]->pause();
+    }
+}
+
+unsigned Farm::recoverFailedMiners() {
+    std::vector<unsigned> toRecover;
+
+    {
+        Guard lock(m_failedMinersMutex);
+        for (unsigned idx : m_failedMiners) {
+            toRecover.push_back(idx);
+        }
+    }
+
+    if (toRecover.empty()) {
+        return 0;
+    }
+
+    unsigned recovered = 0;
+    Guard lock(m_minersMutex);
+
+    for (unsigned idx : toRecover) {
+        if (idx >= m_miners.size()) continue;
+
+        auto& miner = m_miners[idx];
+        Log::info("Attempting to recover " + miner->getName() + "...");
+
+        // Stop, reinit, and restart
+        miner->stop();
+
+        if (miner->init()) {
+            miner->setSolutionCallback([this](const Solution& sol, const std::string& jobId) {
+                onSolution(sol, jobId);
+            });
+
+            // Give it current work
+            {
+                Guard workLock(m_workMutex);
+                if (m_currentWork.valid) {
+                    miner->setWork(m_currentWork);
+                }
+            }
+
+            miner->start();
+
+            {
+                Guard failLock(m_failedMinersMutex);
+                m_failedMiners.erase(idx);
+            }
+
+            Log::info(miner->getName() + " recovered successfully");
+            recovered++;
+        } else {
+            Log::error("Failed to recover " + miner->getName());
+        }
+    }
+
+    return recovered;
+}
+
 bool Farm::start() {
     if (m_running) {
         return true;
@@ -45,19 +129,35 @@ bool Farm::start() {
     m_startTime = std::chrono::steady_clock::now();
     m_stats.reset();
 
-    int started = 0;
+    // Set solution callback for all miners first
     for (auto& miner : m_miners) {
-        // Set solution callback for this miner
         miner->setSolutionCallback([this](const Solution& sol, const std::string& jobId) {
             onSolution(sol, jobId);
         });
+    }
 
-        // Initialize and start
-        if (miner->init()) {
-            miner->start();
+    // Initialize miners in parallel for faster startup with multiple GPUs
+    std::vector<std::future<bool>> initFutures;
+    initFutures.reserve(m_miners.size());
+
+    Log::info("Initializing " + std::to_string(m_miners.size()) + " device(s) in parallel...");
+
+    for (size_t i = 0; i < m_miners.size(); i++) {
+        initFutures.push_back(std::async(std::launch::async, [this, i]() {
+            return m_miners[i]->init();
+        }));
+    }
+
+    // Wait for all initializations and start successful ones
+    int started = 0;
+    for (size_t i = 0; i < m_miners.size(); i++) {
+        bool success = initFutures[i].get();
+        if (success) {
+            m_miners[i]->start();
             started++;
+            Log::info(m_miners[i]->getName() + " initialized successfully");
         } else {
-            Log::error("Failed to initialize " + miner->getName());
+            Log::error("Failed to initialize " + m_miners[i]->getName());
         }
     }
 
@@ -122,23 +222,45 @@ void Farm::resume() {
 void Farm::setWork(const WorkPackage& work) {
     Guard lock(m_minersMutex);
 
-    // Create a copy with totalDevices set to actual miner count
+    // Count active (non-failed) miners
+    unsigned activeCount = 0;
+    {
+        Guard failLock(m_failedMinersMutex);
+        activeCount = static_cast<unsigned>(m_miners.size() - m_failedMiners.size());
+    }
+
+    if (activeCount == 0) {
+        Log::warning("No active miners to receive work");
+        return;
+    }
+
+    // Create a copy with totalDevices set to active miner count
     WorkPackage distributedWork = work;
-    distributedWork.totalDevices = static_cast<unsigned>(m_miners.size());
+    distributedWork.totalDevices = activeCount;
 
     {
         Guard workLock(m_workMutex);
+        // Save current work as fallback before replacing (if it was valid)
+        if (m_currentWork.valid) {
+            m_previousWork = m_currentWork;
+        }
         m_currentWork = distributedWork;
     }
 
-    for (auto& miner : m_miners) {
-        miner->setWork(distributedWork);
+    // Only distribute to non-failed miners
+    for (size_t i = 0; i < m_miners.size(); i++) {
+        if (!isMinerFailed(static_cast<unsigned>(i))) {
+            m_miners[i]->setWork(distributedWork);
+        }
     }
 
     std::ostringstream ss;
     ss << "New work: job=" << work.jobId
        << " height=" << work.height
-       << " devices=" << distributedWork.totalDevices;
+       << " active_devices=" << activeCount;
+    if (activeCount < m_miners.size()) {
+        ss << " (total=" << m_miners.size() << ", failed=" << (m_miners.size() - activeCount) << ")";
+    }
     Log::info(ss.str());
 }
 
@@ -156,10 +278,13 @@ HashRate Farm::getHashRate() const {
     uint64_t totalCount = 0;
     double totalRate = 0;
 
-    for (const auto& miner : m_miners) {
-        auto hr = miner->getHashRate();
-        totalCount += hr.count;
-        totalRate += hr.rate;
+    for (size_t i = 0; i < m_miners.size(); i++) {
+        // Only count active miners
+        if (!isMinerFailed(static_cast<unsigned>(i))) {
+            auto hr = m_miners[i]->getHashRate();
+            totalCount += hr.count;
+            totalRate += hr.rate;
+        }
     }
 
     return HashRate(totalRate, totalCount, totalDuration);
@@ -242,6 +367,49 @@ std::vector<DeviceDescriptor> Farm::enumDevices(bool enumCPU, bool enumOpenCL, b
 #endif
 
     return devices;
+}
+
+bool Farm::hasFallbackWork() const {
+    Guard lock(m_workMutex);
+    return m_previousWork.valid && !m_previousWork.isStale(FALLBACK_WORK_MAX_AGE);
+}
+
+WorkPackage Farm::getFallbackWork() const {
+    Guard lock(m_workMutex);
+    if (m_previousWork.valid && !m_previousWork.isStale(FALLBACK_WORK_MAX_AGE)) {
+        return m_previousWork;
+    }
+    return WorkPackage();  // Return invalid work
+}
+
+bool Farm::activateFallbackWork() {
+    Guard lock(m_minersMutex);
+    Guard workLock(m_workMutex);
+
+    // Only activate if current work is invalid and fallback is available
+    if (m_currentWork.valid) {
+        return false;  // Current work is fine
+    }
+
+    if (!m_previousWork.valid || m_previousWork.isStale(FALLBACK_WORK_MAX_AGE)) {
+        return false;  // No valid fallback
+    }
+
+    Log::warning("Activating fallback work (job=" + m_previousWork.jobId +
+                 ", age=" + std::to_string(m_previousWork.getAgeSeconds()) + "s)");
+
+    // Distribute fallback work to miners
+    for (size_t i = 0; i < m_miners.size(); i++) {
+        if (!isMinerFailed(static_cast<unsigned>(i))) {
+            m_miners[i]->setWork(m_previousWork);
+        }
+    }
+
+    // Move fallback to current (don't keep using same fallback)
+    m_currentWork = m_previousWork;
+    m_previousWork.valid = false;
+
+    return true;
 }
 
 }  // namespace tos

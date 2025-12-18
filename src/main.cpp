@@ -240,10 +240,15 @@ void runMining(const MinerConfig& config) {
         }
     }
 
-    // Shutdown
-    Log::info("Stopping miners...");
+    // Graceful shutdown
+    Log::info("Shutting down...");
+
+    // Stop miners first (they might still be submitting solutions)
     farm.stop();
-    stratum.disconnect();
+
+    // Wait for pending share submissions with 5 second timeout
+    stratum.gracefulDisconnect(5000);
+
     Log::info("Shutdown complete");
 }
 

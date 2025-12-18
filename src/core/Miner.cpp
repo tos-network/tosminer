@@ -147,6 +147,21 @@ bool Miner::verifySolution(uint64_t nonce) {
         return false;
     }
 
+    // Validate nonce is within device's allocated range
+    if (work.totalDevices > 1) {
+        uint64_t deviceStart = work.getDeviceStartNonce(m_index);
+        uint64_t rangeSize = UINT64_MAX / work.totalDevices;
+        uint64_t deviceEnd = deviceStart + rangeSize;
+
+        // Check if nonce is outside this device's range
+        if (nonce < deviceStart || (deviceEnd > deviceStart && nonce >= deviceEnd)) {
+            Log::warning(getName() + ": Nonce " + std::to_string(nonce) +
+                        " outside device range [" + std::to_string(deviceStart) +
+                        ", " + std::to_string(deviceEnd) + ") - possible GPU fault");
+            return false;
+        }
+    }
+
     // Prepare input with nonce
     std::array<uint8_t, INPUT_SIZE> input;
     std::memcpy(input.data(), work.header.data(), INPUT_SIZE);

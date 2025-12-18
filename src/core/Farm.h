@@ -14,6 +14,7 @@
 #include <functional>
 #include <atomic>
 #include <mutex>
+#include <set>
 
 namespace tos {
 
@@ -54,6 +55,27 @@ public:
      * Get number of miners
      */
     size_t minerCount() const { return m_miners.size(); }
+
+    /**
+     * Get number of active (non-failed) miners
+     */
+    size_t activeMinerCount() const;
+
+    /**
+     * Check if a miner has failed
+     */
+    bool isMinerFailed(unsigned index) const;
+
+    /**
+     * Mark a miner as failed (isolate it from work distribution)
+     */
+    void markMinerFailed(unsigned index);
+
+    /**
+     * Attempt to recover failed miners
+     * @return Number of miners successfully recovered
+     */
+    unsigned recoverFailedMiners();
 
     /**
      * Start all miners
@@ -98,6 +120,23 @@ public:
      * Get current work package
      */
     const WorkPackage& getWork() const { return m_currentWork; }
+
+    /**
+     * Check if fallback work is available
+     */
+    bool hasFallbackWork() const;
+
+    /**
+     * Get fallback work (previous work package)
+     * Returns invalid work if no fallback available
+     */
+    WorkPackage getFallbackWork() const;
+
+    /**
+     * Use fallback work if current work is invalid
+     * @return true if fallback was activated
+     */
+    bool activateFallbackWork();
 
     /**
      * Set solution callback
@@ -179,7 +218,11 @@ private:
 
     // Current work package
     WorkPackage m_currentWork;
+    WorkPackage m_previousWork;  // Fallback work (previous job)
     mutable std::mutex m_workMutex;
+
+    // Maximum age for fallback work (seconds)
+    static constexpr unsigned FALLBACK_WORK_MAX_AGE = 120;
 
     // Solution callback
     FarmSolutionCallback m_solutionCallback;
@@ -190,6 +233,10 @@ private:
 
     // Timing
     std::chrono::steady_clock::time_point m_startTime;
+
+    // Failed miners tracking (for device isolation)
+    std::set<unsigned> m_failedMiners;
+    mutable std::mutex m_failedMinersMutex;
 };
 
 }  // namespace tos

@@ -107,3 +107,6 @@ perf.data.old
 /core
 core.*
 vgcore.*
+
+# Local todo list
+TODO.md

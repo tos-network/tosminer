@@ -143,6 +143,19 @@ public:
     void disconnect();
 
     /**
+     * Graceful disconnect - wait for pending share submissions
+     *
+     * @param timeoutMs Maximum time to wait in milliseconds
+     * @return Number of pending requests that completed
+     */
+    unsigned gracefulDisconnect(unsigned timeoutMs = 5000);
+
+    /**
+     * Get number of pending requests
+     */
+    size_t pendingRequestCount() const;
+
+    /**
      * Check if connected
      */
     bool isConnected() const { return m_state >= StratumState::Connected; }
@@ -207,6 +220,11 @@ public:
      * Get rejected share count
      */
     uint64_t getRejectedShares() const { return m_rejectedShares; }
+
+    /**
+     * Get pool version (if provided by pool)
+     */
+    const std::string& getPoolVersion() const { return m_poolVersion; }
 
     /**
      * Enable/disable auto-reconnect
@@ -384,7 +402,7 @@ private:
     // Request tracking
     std::atomic<uint64_t> m_requestId{1};
     std::map<uint64_t, PendingRequest> m_pendingRequests;
-    std::mutex m_requestMutex;
+    mutable std::mutex m_requestMutex;
 
     // Callbacks
     WorkCallback m_workCallback;
@@ -413,6 +431,7 @@ private:
     std::string m_sessionId;
     std::string m_extraNonce1;
     unsigned m_extraNonce2Size{4};
+    std::string m_poolVersion;  // Pool software version (if provided)
 
     // Reconnection settings
     std::atomic<bool> m_autoReconnect{true};

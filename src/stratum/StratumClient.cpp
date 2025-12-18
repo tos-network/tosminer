@@ -5,6 +5,7 @@
  */
 
 #include "StratumClient.h"
+#include "Version.h"
 #include "util/Log.h"
 #include <boost/asio.hpp>
 #ifdef WITH_TLS
@@ -142,6 +143,49 @@ void StratumClient::disconnect() {
 #endif
 
     notifyConnectionChange(false);
+}
+
+unsigned StratumClient::gracefulDisconnect(unsigned timeoutMs) {
+    if (m_state == StratumState::Disconnected) {
+        return 0;
+    }
+
+    // Wait for pending share submissions to complete
+    size_t initialPending = pendingRequestCount();
+    if (initialPending > 0) {
+        Log::info("Waiting for " + std::to_string(initialPending) + " pending share(s) to complete...");
+    }
+
+    unsigned waited = 0;
+    const unsigned checkInterval = 100;  // Check every 100ms
+
+    while (waited < timeoutMs) {
+        size_t pending = pendingRequestCount();
+        if (pending == 0) {
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(checkInterval));
+        waited += checkInterval;
+    }
+
+    size_t remaining = pendingRequestCount();
+    unsigned completed = static_cast<unsigned>(initialPending - remaining);
+
+    if (remaining > 0) {
+        Log::warning("Timeout waiting for " + std::to_string(remaining) +
+                    " pending request(s), disconnecting anyway");
+    } else if (initialPending > 0) {
+        Log::info("All pending requests completed");
+    }
+
+    disconnect();
+    return completed;
+}
+
+size_t StratumClient::pendingRequestCount() const {
+    Guard lock(m_requestMutex);
+    return m_pendingRequests.size();
 }
 
 void StratumClient::setCredentials(const std::string& user, const std::string& pass) {
@@ -688,7 +732,7 @@ uint64_t StratumClient::sendRequest(const std::string& method, const json& param
 
 void StratumClient::subscribe() {
     json params = json::array();
-    params.push_back("tosminer/1.0.0");
+    params.push_back(MINER_VERSION);
 
     uint64_t id = sendRequest("mining.subscribe", params);
     {
