@@ -116,6 +116,11 @@ set(MAIN_SOURCES
     src/MinerCLI.cpp
 )
 
+# CPU sources (always included)
+set(CPU_SOURCES
+    src/cpu/CPUMiner.cpp
+)
+
 # OpenCL sources
 if(WITH_OPENCL)
     set(OPENCL_SOURCES
@@ -147,6 +152,7 @@ set(ALL_SOURCES
     ${STRATUM_SOURCES}
     ${API_SOURCES}
     ${MAIN_SOURCES}
+    ${CPU_SOURCES}
 )
 
 if(WITH_OPENCL)

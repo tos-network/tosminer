@@ -21,6 +21,8 @@
 #include "cuda/CUDAMiner.h"
 #endif
 
+#include "cpu/CPUMiner.h"
+
 #include <iostream>
 #include <iomanip>
 #include <csignal>
@@ -44,8 +46,16 @@ void listDevices() {
     std::cout << "\n=== Available Mining Devices ===\n\n";
 
     // CPU
-    std::cout << "CPU:\n";
-    std::cout << "  [0] CPU (" << std::thread::hardware_concurrency() << " threads)\n";
+    std::cout << "CPU Mining:\n";
+    auto cpuDevices = CPUMiner::enumDevices();
+    if (cpuDevices.empty()) {
+        std::cout << "  None found\n";
+    } else {
+        std::cout << "  " << cpuDevices.size() << " threads available\n";
+        for (const auto& dev : cpuDevices) {
+            std::cout << "  [" << dev.index << "] " << dev.name << "\n";
+        }
+    }
 
 #ifdef WITH_OPENCL
     std::cout << "\nOpenCL Devices:\n";
@@ -202,6 +212,18 @@ void runMining(const MinerConfig& config) {
         }
     }
 #endif
+
+    // CPU mining
+    if (config.useCPU) {
+        // Set thread count before enumeration (0 = auto-detect)
+        CPUMiner::setThreadCount(config.cpuThreads);
+
+        auto devices = CPUMiner::enumDevices();
+        for (const auto& dev : devices) {
+            farm.addMiner(std::make_unique<CPUMiner>(dev.index, dev));
+        }
+        Log::info("Added " + std::to_string(devices.size()) + " CPU mining threads");
+    }
 
     if (farm.minerCount() == 0) {
         Log::error("No mining devices available");

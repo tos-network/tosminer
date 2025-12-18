@@ -19,6 +19,11 @@ constexpr size_t INPUT_SIZE = 112;      // Block header size
 constexpr size_t HASH_SIZE = 32;        // Output hash size
 constexpr size_t SCRATCHPAD_SIZE = 8192; // 64KB / 8 bytes
 
+// Nonce offset in TOS block header
+// Header structure: work_hash(32) + timestamp(8) + nonce(8) + extra_nonce(32) + miner(32)
+// Nonce is at bytes 40-47
+constexpr size_t NONCE_OFFSET = 40;
+
 /**
  * Work package structure
  *
@@ -186,11 +191,11 @@ struct WorkPackage {
         }
     }
 
-    // Set nonce in header (last 8 bytes)
+    // Set nonce in header at NONCE_OFFSET (bytes 40-47)
     void setNonce(Nonce nonce) {
-        // Nonce goes in last 8 bytes of header (little-endian)
+        // Nonce goes at offset 40 in header (big-endian, MSB first)
         for (int i = 0; i < 8; ++i) {
-            header[INPUT_SIZE - 8 + i] = static_cast<uint8_t>(nonce >> (i * 8));
+            header[NONCE_OFFSET + i] = static_cast<uint8_t>(nonce >> ((7 - i) * 8));
         }
     }
 
@@ -198,7 +203,7 @@ struct WorkPackage {
     Nonce getNonce() const {
         Nonce nonce = 0;
         for (int i = 0; i < 8; ++i) {
-            nonce |= static_cast<Nonce>(header[INPUT_SIZE - 8 + i]) << (i * 8);
+            nonce |= static_cast<Nonce>(header[NONCE_OFFSET + i]) << ((7 - i) * 8);
         }
         return nonce;
     }

@@ -50,6 +50,8 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
         ("opencl,G", "Use OpenCL devices")
         ("cuda,U", "Use CUDA devices")
         ("cpu,C", "Use CPU mining")
+        ("cpu-threads,t", po::value<unsigned>()->default_value(0),
+         "Number of CPU mining threads (0 = auto-detect all cores)")
         ("opencl-devices", po::value<std::string>(), "OpenCL device indices (e.g., 0,1,2)")
         ("cuda-devices", po::value<std::string>(), "CUDA device indices (e.g., 0,1)")
     ;
@@ -130,6 +132,7 @@ MinerConfig MinerCLI::parse(int argc, char* argv[]) {
         config.useOpenCL = vm.count("opencl") > 0;
         config.useCUDA = vm.count("cuda") > 0;
         config.useCPU = vm.count("cpu") > 0;
+        config.cpuThreads = vm["cpu-threads"].as<unsigned>();
 
         // If no specific device type selected, use all available
         if (!config.useOpenCL && !config.useCUDA && !config.useCPU) {
@@ -215,6 +218,7 @@ Device Options:
   -G, --opencl              Use OpenCL (GPU) mining
   -U, --cuda                Use CUDA (NVIDIA GPU) mining
   -C, --cpu                 Use CPU mining
+  -t, --cpu-threads N       Number of CPU threads (0 = auto-detect all cores)
   --opencl-devices LIST     Comma-separated OpenCL device indices
   --cuda-devices LIST       Comma-separated CUDA device indices
 

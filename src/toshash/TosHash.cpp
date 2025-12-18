@@ -133,9 +133,9 @@ Solution TosHash::search(const WorkPackage& work, Nonce nonce, ScratchPad& scrat
     std::array<uint8_t, INPUT_SIZE> input;
     std::memcpy(input.data(), work.header.data(), INPUT_SIZE);
 
-    // Set nonce (last 8 bytes, little-endian)
+    // Set nonce at NONCE_OFFSET (bytes 40-47, big-endian)
     for (int i = 0; i < 8; ++i) {
-        input[INPUT_SIZE - 8 + i] = static_cast<uint8_t>(nonce >> (i * 8));
+        input[NONCE_OFFSET + i] = static_cast<uint8_t>(nonce >> ((7 - i) * 8));
     }
 
     // Compute hash
@@ -157,8 +157,9 @@ bool TosHash::verify(const WorkPackage& work, const Solution& solution) {
     std::array<uint8_t, INPUT_SIZE> input;
     std::memcpy(input.data(), work.header.data(), INPUT_SIZE);
 
+    // Set nonce at NONCE_OFFSET (bytes 40-47, big-endian)
     for (int i = 0; i < 8; ++i) {
-        input[INPUT_SIZE - 8 + i] = static_cast<uint8_t>(solution.nonce >> (i * 8));
+        input[NONCE_OFFSET + i] = static_cast<uint8_t>(solution.nonce >> ((7 - i) * 8));
     }
 
     // Compute hash

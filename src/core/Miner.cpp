@@ -187,9 +187,9 @@ bool Miner::verifySolution(uint64_t nonce) {
     std::array<uint8_t, INPUT_SIZE> input;
     std::memcpy(input.data(), work.header.data(), INPUT_SIZE);
 
-    // Set nonce in last 8 bytes (little-endian)
+    // Set nonce at NONCE_OFFSET (bytes 40-47, big-endian)
     for (int i = 0; i < 8; i++) {
-        input[INPUT_SIZE - 8 + i] = static_cast<uint8_t>(nonce >> (i * 8));
+        input[NONCE_OFFSET + i] = static_cast<uint8_t>(nonce >> ((7 - i) * 8));
     }
 
     // Compute hash using thread-local hasher

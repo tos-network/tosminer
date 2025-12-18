@@ -233,11 +233,12 @@ void StratumClient::submitSolution(const Solution& solution, const std::string& 
     }
     params.push_back(en2Hex.str());
 
-    // Nonce as hex (little-endian, 16 hex chars for 64-bit nonce)
+    // Nonce as hex (big-endian, 16 hex chars for 64-bit nonce)
+    // Must match TOS protocol: nonce at bytes 40-47 in big-endian
     std::ostringstream nonceHex;
     for (int i = 0; i < 8; i++) {
         nonceHex << std::hex << std::setw(2) << std::setfill('0')
-                 << static_cast<int>((solution.nonce >> (i * 8)) & 0xFF);
+                 << static_cast<int>((solution.nonce >> ((7 - i) * 8)) & 0xFF);
     }
     params.push_back(nonceHex.str());
 

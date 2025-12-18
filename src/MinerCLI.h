@@ -35,6 +35,7 @@ struct MinerConfig {
     bool useCPU = false;
     bool useOpenCL = true;
     bool useCUDA = true;
+    unsigned cpuThreads = 0;  // 0 = auto-detect (use all cores)
     std::vector<unsigned> openclDevices;
     std::vector<unsigned> cudaDevices;
 
